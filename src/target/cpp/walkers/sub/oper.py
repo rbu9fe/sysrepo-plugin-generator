@@ -40,14 +40,14 @@ class OperSubscriptionWalker(Walker):
             last_prefix = self.ctx.prefix_stack[depth]
 
         if node.nodetype() == LyNode.LEAF or node.nodetype() == LyNode.LEAFLIST:
-            # if node.config_false():
-            if last_prefix is not None:
-                self.ctx.callbacks.append(
-                    Callback(node.data_path(), to_c_variable(last_prefix + "_" + node.name())))
-            else:
-                self.ctx.callbacks.append(
-                    Callback(node.data_path(), to_c_variable(node.name())))
-            return True
+            if node.config_false():
+                if last_prefix is not None:
+                    self.ctx.callbacks.append(
+                        Callback(node.data_path(), to_c_variable(last_prefix + "_" + node.name())))
+                else:
+                    self.ctx.callbacks.append(
+                        Callback(node.data_path(), to_c_variable(node.name())))
+                return True
         else:
             c_var = to_c_variable(node.name())
             if self.prefix_cfg.check_prefix(c_var):

@@ -1,17 +1,18 @@
 [generator]
-prefix = "ietf_ifc"
+prefix = "interfaces"
 
 [yang.modules]
 main = "ietf-interfaces"
-other = ["ietf-ip"]
+other = ["ietf-ip", "ietf-if-extensions", "ietf-if-vlan-encapsulation", "ieee802-dot1q-bridge"]
+features = ["sub-interfaces"]
 
 [yang.types]
 identityref = "char *"
 
 [yang.prefix]
 interface = "interface"
-statistics = "stats"
-address = "addr"
-neighbor = "neigh"
-ipv4 = "ipv4"
-ipv6 = "ipv6"
+# statistics = "statistics"
+# address = "addr"
+# neighbor = "neigh"
+# ipv4 = "ipv4"
+# ipv6 = "ipv6"

@@ -1,0 +1,140 @@
+#include <sysrepo-cpp/sysrepo-wrapper.hpp>
+#include <sysrepo-cpp/utils/utils.hpp>
+#include <sysrepo.h>
+#include <srpcpp.hpp>
+
+#include <magic_enum.hpp>
+
+#include "plugin.hpp"
+#include "core/context.hpp"
+#include "core/module.hpp"
+
+{% for module in modules %}
+#include "core/api/{{ module.name }}/{{ module.name }}.hpp"
+{% endfor %}
+
+/**
+ * @brief Plugin init callback.
+ *
+ * @param session Plugin session.
+ * @param priv Private data.
+ *
+ * @return Error code (SR_ERR_OK on success).
+ */
+int sr_plugin_init_cb( sr_session_ctx_t *c_session, void **priv )
+{
+    sysrepo::ErrorCode error = sysrepo::ErrorCode::Ok;
+    /**
+     * @note The incoming session is shared between all plugins. Create our own sessions so that we're independent from them to
+     *       make the plugins more robust against errors (e.g. one plugin may set it to another datastore without changing back).
+     *       Sysrepo sessions must not be shared between different threads, hence, create multiple ones:
+     *       - @p session: A session to work with here during the plugin initialization.
+     *       - @p p_session: A session to work with in the change callbacks (stored in the plugin context).
+     */
+    auto connection{ sysrepo::wrapUnmanagedSession( c_session ).getConnection() };
+    auto session{ connection.sessionStart( sysrepo::Datastore::Running ) };
+    auto p_session{ std::make_shared<Sysrepo::Session>( connection.sessionStart( sysrepo::Datastore::Running ) ) };
+
+    // TODO: [generator] Pass dependency injection objects.
+    auto ctx = new core::PluginContext( p_session );
+
+    using enum sysrepo::Datastore;
+
+    *priv = static_cast<void *>( ctx );
+
+    /* Register modules, constructs all classes and loads the system into the local cache. */
+    auto &registry( srpc::ModuleRegistry<core::PluginContext>::getInstance() );
+    {% for module in modules %}
+        
+        DBGLOG( "Registering {{ module.get_name() }} module" );
+        registry.registerModule<core::CoreModule<core::api::{{ to_camel_case(to_c_variable(module.prefix), True) }}>>( *ctx, "{{ module.get_name() }}" );
+    {% endfor %}
+
+    auto &modules = registry.getRegisteredModules();
+
+    /* Initialize datastores. */
+    for ( const auto &mod : modules )
+    {
+        for ( const auto &initializer : mod->getDatastoreInitializers() )
+        {
+            try
+            {
+                initializer->initializeDatastore( session );
+            }
+            catch ( const std::runtime_error &e )
+            {
+                DBGLOG(
+                    "Failed to initialize %s datastore for module %s: %s",
+                    magic_enum::enum_name( session.activeDatastore() ).data(), mod->getName(), e.what() );
+
+                session.switchDatastore( sysrepo::Datastore::Running );
+            }
+        }
+    }
+
+    /* The modules prepared their running configuration in the candidate datastore => activate it now! */
+    DBGLOG( "Comitting initial running datastore" );
+    session.copyConfig( sysrepo::Datastore::Candidate, std::nullopt, sysrepo::kDefaultTimeoutApplyChanges );
+
+    /* Register subscriptions. */
+    for ( auto &mod : modules )
+    {
+        DBGLOG( "Registering operational callbacks for module %s", mod->getName() );
+        srpc::registerOperationalSubscriptions( session, *ctx, mod );
+
+        DBGLOG( "Registering module change callbacks for module %s", mod->getName() );
+        srpc::registerModuleChangeSubscriptions( session, *ctx, mod );
+
+        DBGLOG( "Registering RPC callbacks for module %s", mod->getName() );
+        srpc::registerRpcSubscriptions( session, *ctx, mod );
+
+        DBGLOG( "Registered module %s", mod->getName() );
+    }
+
+    /* Call datastore appliers (e.g. apply factory-default and/or startup datastores to the system). */
+    for ( const auto &mod : modules )
+    {
+        DBGLOG( "Applying startup values for module %s", mod->getName() );
+        for ( const auto &applier : mod->getValueAppliers() )
+        {
+            try
+            {
+                applier->applyDatastoreValues( session );
+            }
+            catch ( const std::runtime_error &e )
+            {
+                DBGLOG( "Failed to apply datastore values for module %s: %s", mod->getName(), e.what() );
+
+                DBGLOG( "Affected paths:" );
+                for ( const auto &path : applier->getPaths() )
+                {
+                    DBGLOG( "\t%s", path.data() );
+                }
+
+                session.switchDatastore( sysrepo::Datastore::Running );
+            }
+        }
+    }
+
+    /* The modules prepared their factory-default/startup changes in the candidate datastore => activate them now! */
+    DBGLOG( "Comitting changes from factory-default/startup into running datastore" );
+    session.copyConfig( sysrepo::Datastore::Candidate, std::nullopt, sysrepo::kDefaultTimeoutApplyChanges );
+
+    return static_cast<int>( error );
+}
+
+/**
+ * @brief Plugin cleanup callback.
+ *
+ * @param session Plugin session.
+ * @param priv Private data.
+ */
+void sr_plugin_cleanup_cb( [[maybe_unused]] sr_session_ctx_t *c_session, void *priv )
+{
+    if ( priv )
+    {
+        auto ctx = static_cast<core::PluginContext *>( priv );
+
+        delete ctx;
+    }
+}

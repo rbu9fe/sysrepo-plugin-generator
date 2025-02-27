@@ -1,15 +1,36 @@
 from typing import Dict, Any, List, Optional
 
 
-class YangModulesConfiguration:
-    main_module: str
-    other_modules: List[str] = []
-    features: Optional[List[str]] = None
+class YangMainModuleConfiguration:
+    def __init__(self, name, prefix, disable, skip_prefix_mode) -> None:
+        self.name: str = name
+        self.prefix: str = prefix
+        self.disable: bool = disable
+        self.skip_prefix_mode: bool = skip_prefix_mode
 
+    def get_name(self) -> str:
+        return self.name
+
+    def get_prefix(self) -> str:
+        return self.prefix
+
+    def get_disable(self) -> bool:
+        return self.disable
+
+    def get_skip_prefix_mode(self) -> bool:
+        return self.skip_prefix_mode
+
+
+class YangModulesConfiguration:
     def __init__(self, config: Dict[str, Any]) -> None:
         assert ("main" in config)
 
-        self.main_module = config["main"]
+        self.main_modules: List[YangMainModuleConfiguration] = []
+        self.other_modules: List[str] = []
+        self.features: Optional[List[str]] = None
+
+        for module in config["main"]:
+            self.main_modules.append(YangMainModuleConfiguration(module["name"], module["prefix"], module["disable"] if "disable" in module else False, module["skip_prefix_mode"] if "skip_prefix_mode" in module else None))
 
         if "other" in config:
             self.other_modules = config["other"]
@@ -17,8 +38,8 @@ class YangModulesConfiguration:
         if "features" in config:
             self.features = config["features"]
 
-    def get_main_module(self) -> str:
-        return self.main_module
+    def get_main_modules(self) -> Dict[str, YangMainModuleConfiguration]:
+        return self.main_modules
 
     def get_other_modules(self) -> List[str]:
         return self.other_modules
@@ -28,10 +49,8 @@ class YangModulesConfiguration:
 
 
 class YangPrefixConfiguration:
-    cfg: Dict[str, str]
-
     def __init__(self, config: Dict[str, Any]) -> None:
-        self.cfg = config
+        self.cfg: Dict[str, str] = config
 
     def check_prefix(self, prefix: str) -> bool:
         if prefix in self.cfg:
@@ -43,24 +62,17 @@ class YangPrefixConfiguration:
 
 
 class YangTypesConfiguration:
-    types_map: Dict[str, str]
-
     def __init__(self, config: Dict[str, Any]) -> None:
-        self.types_map = config
+        self.types_map: Dict[str, str] = config
 
     def get_types_map(self) -> Dict[str, str]:
         return self.types_map
 
 
 class YangConfiguration:
-    mod_cfg: YangModulesConfiguration
-    types_cfg: YangTypesConfiguration
-    prefix_cfg: YangPrefixConfiguration
-
     def __init__(self, config: Dict[str, Any]):
-        self.mod_cfg = YangModulesConfiguration(config["modules"])
-        self.types_cfg = YangTypesConfiguration(config["types"])
-        self.prefix_cfg = YangPrefixConfiguration(config["prefix"])
+        self.mod_cfg: YangModulesConfiguration = YangModulesConfiguration(config["modules"])
+        self.types_cfg: YangTypesConfiguration = YangTypesConfiguration(config["types"])
 
     def get_modules_configuration(self) -> YangModulesConfiguration:
         return self.mod_cfg
@@ -68,20 +80,14 @@ class YangConfiguration:
     def get_types_configuration(self) -> YangTypesConfiguration:
         return self.types_cfg
 
-    def get_prefix_configuration(self) -> YangPrefixConfiguration:
-        return self.prefix_cfg
-
 
 class GeneratorConfiguration:
-    prefix: str
-    yang_cfg: YangConfiguration
-
     def __init__(self, config: Dict[str, Any]):
-        self.prefix = config["generator"]["prefix"]
-        self.yang_cfg = YangConfiguration(config["yang"])
+        self.name: str = config["generator"]["name"]
+        self.yang_cfg: YangConfiguration = YangConfiguration(config["yang"])
 
-    def get_prefix(self) -> str:
-        return self.prefix
+    def get_name(self) -> str:
+        return self.name
 
     def get_yang_configuration(self) -> YangConfiguration:
         return self.yang_cfg

@@ -1,0 +1,80 @@
+#pragma once
+
+{% if node.get_parent() %}
+{# Include the parent's context header file. However, we must traverse to tree up until a node different from CHOICE and CASE is found since they're not represented as C++ classes. #}
+{% set ns = namespace(parent_node=node) %}
+{% for _ in range(1, 1000) %}
+    {% set ns.parent_node = ns.parent_node.get_parent() %}
+    {% if ns.parent_node.nodetype() not in [LyNode.CHOICE, LyNode.CASE] %}
+        #include "../{{ ns.parent_node.name() }}-ctx.hpp"
+        {% break %}
+    {% endif %}
+{% endfor %}
+{% else %}
+#include "core/context.hpp"
+{% endif %}
+
+{% import 'macros.jinja2' as macro %}
+
+{% set class = to_camel_case(to_c_variable(prefix), True) %}
+
+namespace core::api {
+
+{#
+/** Forward declaration of class referenced below. */
+class {{ class }};
+#}
+
+{% set ctx = class + "Ctx" %}
+{% if node.get_parent() %}
+    {% set parent_ctx = to_camel_case(to_c_variable(parent_prefix), True) + "Ctx" %}
+    {% set derived_from = parent_ctx %}
+{% else %}
+    {% set parent_ctx = "::core::PluginContext" %}
+    {% set derived_from = "::core::ApiContext" %}
+{% endif %}
+
+/**
+{% if node.nodetype() not in [LyNode.CONTAINER, LyNode.LIST] or macro.get_list_len(node.children()) == "0" %}
+ * @brief API context structure. May be stored in the API context (probably using its node path as component name)
+ *        so that other nodes can access it from anywhere in the tree.
+{% else %}
+ * @brief API context structure, passed to child nodes. Can also be stored in the API context
+ *        (probably using its node path as component name) so that other nodes can access it from anywhere in the tree.
+{% endif %}
+ *
+{% if node.get_parent() %}
+ * @note By default it's the same as the parent structure. Modify as needed as long as it's derived from @p {{ derived_from }}.
+{% else %}
+ * @note By default it's the same as the parent structure. Modify as needed as long as it's derived from @p {{ derived_from }}
+ *       and carries a member @p plugin_ctx of type @p {{ parent_ctx }}&.
+{% endif %}
+{% if node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST] %}
+ * @note By default this context is _not_ used by the corresponding node, instead, it's only storing a reference to the parent context.
+{% endif %}
+ */
+{% if node.get_parent() %}
+struct {{ ctx }} : {{ derived_from }}
+{
+{#
+    /**
+     * @brief Example extending the context by a reference to our own object, which requires a custom constructor (pass @p *this as @p obj).
+     * 
+     * @note Requires forward declaration of `class {{ class }};`.
+     */ 
+    explicit {{ ctx }}({{ class }} &obj, const {{ parent_ctx }} &parent_ctx ) : {{ parent_ctx }}(parent_ctx), m_obj(obj) {}
+    
+    {{ class }} &m_obj;
+ #}
+    explicit {{ ctx }}(const {{ parent_ctx }} &parent_ctx ) : {{ parent_ctx }}(parent_ctx) {}
+};
+{% else %}
+struct {{ ctx }} : ::core::ApiContext
+{
+    explicit {{ ctx }}( {{ parent_ctx }} &ctx ) : plugin_ctx( ctx ) {}
+
+    {{ parent_ctx }} &plugin_ctx;
+};
+{% endif %}
+
+}

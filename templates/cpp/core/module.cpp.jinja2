@@ -1,0 +1,377 @@
+#include "module.hpp"
+
+{% for module in modules %}
+#include "core/api/{{ module.name }}/{{ module.name }}.hpp"
+{% endfor %}
+
+namespace core
+{
+
+template<typename T>
+CoreDatastoreInitializer<T>::CoreDatastoreInitializer( const std::string &module_name, sysrepo::Datastore datastore, T &data )
+    : m_module_name(module_name), m_datastore( datastore ), m_root( data )
+{
+}
+
+template<typename T>
+CoreDatastoreInitializer<T>::~CoreDatastoreInitializer() = default;
+
+template<typename T>
+void CoreDatastoreInitializer<T>::initializeDatastore( Sysrepo::Session &session )
+{
+    using enum DataType;
+    DataType data_type{ kNone };
+    auto dst_datastore{ sysrepo::Datastore::Running };
+
+    DBGLOG(
+        "Initializing %s datastore for module %s", magic_enum::enum_name( m_datastore ).data(),
+        m_module_name.data() );
+
+    switch ( m_datastore )
+    {
+        case sysrepo::Datastore::Running:
+            data_type = kConfig;
+            /* Write into candidate datastore to prepare the module's changes without applying them yet
+             * since Yang 'when' conditions may be violated in case more Yang root nodes follow.
+             * The caller will then activate the candidate datastore once all modules are finished. */
+            dst_datastore = sysrepo::Datastore::Candidate;
+            break;
+        case sysrepo::Datastore::Operational:
+            data_type = kStatePush;
+            dst_datastore = m_datastore;
+            break;
+        default:
+            /* NOP */
+            break;
+    }
+
+    session.switchDatastore( dst_datastore );
+
+    std::optional<libyang::DataNode> output{};
+    for ( const auto &node : session.getContext().findXPath( "/" + m_module_name + ":*" ) )
+    {
+        m_root.InsertNode( data_type, node.path(), output );
+    }
+
+    if ( output.has_value() )
+    {
+        if ( m_datastore == sysrepo::Datastore::Running )
+        {
+            session.replaceConfig( output, m_module_name );
+        }
+        else
+        {
+            session.editBatch( *output, sysrepo::DefaultOperation::Merge );
+            session.applyChanges();
+        }
+    }
+
+    session.switchDatastore( sysrepo::Datastore::Running );
+}
+
+template<typename T>
+std::list<std::string> CoreDatastoreInitializer<T>::getPaths()
+{
+    return { m_root.GetNodePath() + ":*" };
+}
+
+template<typename T>
+CoreDatastoreApplier<T>::CoreDatastoreApplier( const std::string &module_name, T &data )
+    : m_module_name( module_name )
+    , m_root( data )
+{
+}
+
+template<typename T>
+CoreDatastoreApplier<T>::~CoreDatastoreApplier() = default;
+
+template<typename T>
+void CoreDatastoreApplier<T>::applyDatastoreValues( Sysrepo::Session &session )
+{
+    using enum sysrepo::Datastore;
+
+    /**
+     * Normally we would like to apply both factory-default and startup datastores over the candidate datastore.
+     * However, then the startup datastore may need to remove a list item that factory-default added (e.g. bridge port-map entries).
+     * Since we need to merge the data (since the startup datastore does not reflect the complete system configuration) annotations
+     * would be required to tell Yang to purge/remove a leaf/tree first before merging. That's not (yet) supported by sysrepo, see
+     * sysrepo issue #3335 (https://github.com/sysrepo/sysrepo/issues/3335).
+     * Possible workarounds include:
+     * 1. Write the startup datastore file manually not using the sysrepo API.
+     *    Problem: Merge changes with the existing datastore contents.
+     * 2. Hard code here to delete the Yang tree that shall be purged (e.g. the bridge port-map) before applying the startup datastore.
+     *    Problem: Not generic.
+     * 3. Apply only the startup datastore. In case no startup datastore has been stored yet then sysrepo provides the factory-default data
+     *    since the startup is initialized to that. For that to work the startup datastore needs to be a superset of the factory-default data,
+     *    otherwise, some configuration items defined in the factory-default datastore would not be applied. That can be guaranteed by how
+     *    to write the startup datastore, i.e. it must include all fields that are defined in the factory-default datastore.
+     *    Problem: When there's FW update that extends the factory-default datastore then the existing startup won't set that new configuration item.
+     *    Possible solution: Install an update hook that patches the startup datastore by the new elements.
+     * For now we go with workaround #3 and hope that sysrepo will support the feature of storing annotations in datstores in the future.
+     */
+    for ( const auto &datastore : { /* FactoryDefault, */ Startup } )
+    {
+        DBGLOG(
+            "Applying %s datastore values for module %s", magic_enum::enum_name( datastore ).data(),
+            m_module_name.data() );
+
+        session.switchDatastore( datastore );
+        if ( const auto &data{ session.getData( m_root.GetNodePath() + ":*" ) }; data )
+        {
+            session.switchDatastore( Candidate );
+            session.editBatch( *data, sysrepo::DefaultOperation::Merge );
+            session.applyChanges();
+        }
+    }
+
+    session.switchDatastore( Running );
+}
+
+template<typename T>
+std::list<std::string> CoreDatastoreApplier<T>::getPaths()
+{
+    return { m_root.GetNodePath() + ":*" };
+}
+
+/**
+ * @brief Core module constructor. Allocates each context.
+ */
+template<typename T>
+CoreModule<T>::CoreModule( core::PluginContext &plugin_ctx, const std::string &module_name )
+    : srpc::IModule<PluginContext>( plugin_ctx )
+    , m_module_name( module_name )
+    , m_root( plugin_ctx, SystemChange::kTransparent )
+{
+    std::shared_ptr<srpc::IDatastoreInitializer> running_initializer{
+        std::make_shared<CoreDatastoreInitializer<T>>( module_name, sysrepo::Datastore::Running, m_root ) };
+    addDatastoreInitializer( running_initializer );
+
+    std::shared_ptr<srpc::IDatastoreInitializer> operational_initializer{
+        std::make_shared<CoreDatastoreInitializer<T>>( module_name, sysrepo::Datastore::Operational, m_root ) };
+    addDatastoreInitializer( operational_initializer );
+
+    std::shared_ptr<srpc::IDatastoreApplier> startup_applier{
+        std::make_shared<CoreDatastoreApplier<T>>( module_name, m_root ) };
+    addValueApplier( startup_applier );
+}
+
+/**
+ * @brief Get all operational callbacks which the module should use.
+ */
+template<typename T>
+std::list<srpc::OperationalCallback> CoreModule<T>::getOperationalCallbacks()
+{
+    /**
+     * XXX That's the bad guy! Mixing operational pull and push data is NOT supported
+     * by sysrepo! There are several issues about that and the developers state that
+     * one should not mix them. However, pushing initial operational data is fine!
+     * Activate the oper-get callback if you wish to support operational pull data,
+     * but you should make sure not to update operational push data after initialization.
+     */
+#if 0
+    return { srpc::OperationalCallback{
+        m_module_name, m_root.GetNodePath() + ":*", std::bind_front( &CoreModule::OperCb, this ),
+        sysrepo::SubscribeOptions::OperMerge } };
+#else
+    return {};
+#endif
+}
+
+/**
+ * @brief Get all module change callbacks which the module should use.
+ */
+template<typename T>
+std::list<srpc::ModuleChangeCallback> CoreModule<T>::getModuleChangeCallbacks()
+{
+    return { srpc::ModuleChangeCallback{
+        m_module_name, m_root.GetNodePath() + ":*", std::bind_front( &CoreModule::ChangeCb, this ) } };
+}
+
+/**
+ * @brief Get all RPC callbacks which the module should use.
+ */
+template<typename T>
+std::list<srpc::RpcCallback> CoreModule<T>::getRpcCallbacks()
+{
+    /* Get the RPC callback list from the main module. */
+    return m_root.GetRpcCallbacks();
+}
+/**
+ * @brief Get module module.
+ */
+template<typename T>
+const char *CoreModule<T>::getName()
+{
+    return m_module_name.data();
+}
+/**
+ * @brief Core module destructor.
+ */
+template<typename T>
+CoreModule<T>::~CoreModule() = default;
+
+/**
+ * @brief Sysrepo change callback delegating callback events to the registered module's Yang root node classes.
+ */
+template<typename T>
+sysrepo::ErrorCode CoreModule<T>::ChangeCb(
+    Sysrepo::SessionParam session, [[maybe_unused]] uint32_t subscriptionId,
+    [[maybe_unused]] std::string_view moduleName, [[maybe_unused]] std::optional<std::string_view> subXPath,
+    sysrepo::Event event, [[maybe_unused]] uint32_t requestId ) noexcept
+{
+    auto rc{ sysrepo::ErrorCode::Ok };
+
+    DBGLOG(
+        "%s: Entering sysrepo change callback for event '%s'.", moduleName.data(),
+        magic_enum::enum_name( event ).data() );
+
+    /* Provide the current sysrepo session so that the changes can be accessed directly from the running datastore. */
+    getPluginContext().setSysrepoCallbackSession( std::make_shared<Sysrepo::Session>( session ) );
+
+    const auto abort_changes{ [&root = this->m_root]()
+                              {
+                                  /* Restore cache from backup and apply it. */
+                                  root.RevertNode();
+                                  root.Store();
+                                  root.Finalize();
+                              } };
+
+    try
+    {
+        switch ( event )
+        {
+            using enum sysrepo::Event;
+            case Change:
+                /* First update the cache of the entire tree, then validate and apply already so that system errors lead to an abort callback. */
+                for ( const auto &change : session.getChanges() )
+                {
+                    m_root.SetNode( change, CacheState::kInvalid );
+                }
+
+                m_root.Validate();
+                m_root.Store();
+
+                break;
+
+            case Done:
+                m_root.Finalize();
+                break;
+
+            case Abort:
+                abort_changes();
+                break;
+
+            default:
+                break;
+        }
+    }
+    catch ( const std::system_error &e )
+    {
+        /* We don't receive an 'Abort' event if we ourselves reject the changes => In that case abort manually! */
+        if ( event == sysrepo::Event::Change )
+        {
+            abort_changes();
+        }
+
+        if ( const auto &category{ e.code().category() };
+             0 == static_cast<std::string_view>( category.name() ).compare( "sysrepo" ) )
+        {
+            rc = static_cast<sysrepo::ErrorCode>( e.code().value() );
+        }
+        else
+        {
+            rc = sysrepo::ErrorCode::OperationFailed;
+        }
+
+        DBGLOG( "%s: %s", moduleName.data(), e.what() );
+
+        session.setErrorMessage( e.what() );
+    }
+    catch ( const std::runtime_error &e )
+    {
+        DBGLOG( "%s: %s", moduleName.data(), e.what() );
+        rc = sysrepo::ErrorCode::OperationFailed;
+
+        session.setErrorMessage( e.what() );
+    }
+
+    /* Reset the sysrepo callback session. */
+    getPluginContext().setSysrepoCallbackSession( nullptr );
+
+    /* The main session is used to push operational data. Commit the changes only in the Done event. */
+    auto main_session{ getPluginContext().getSession() };
+    main_session.switchDatastore( sysrepo::Datastore::Operational );
+    if ( event == sysrepo::Event::Done )
+    {
+        if ( main_session.getPendingChanges().has_value() )
+        {
+            DBGLOG(
+                "%s: Starting committing operational changes that were triggered by config changes.",
+                moduleName.data() );
+
+            main_session.applyChanges();
+
+            DBGLOG(
+                "%s: Done committing operational changes that were triggered by config changes.",
+                moduleName.data() );
+        }
+    }
+    else if ( event == sysrepo::Event::Abort )
+    {
+        main_session.discardChanges();
+    }
+    main_session.switchDatastore( sysrepo::Datastore::Running );
+
+    DBGLOG(
+        "%s: Leaving sysrepo change callback for event '%s'.", moduleName.data(),
+        magic_enum::enum_name( event ).data() );
+
+    return rc;
+}
+
+/**
+ * @brief Sysrepo operational callback delegating callbacks to the registered module's Yang root node classes.
+ */
+template<typename T>
+[[maybe_unused]] sysrepo::ErrorCode CoreModule<T>::OperCb(
+    [[maybe_unused]] Sysrepo::SessionParam session, [[maybe_unused]] uint32_t subscriptionId,
+    [[maybe_unused]] std::string_view moduleName, [[maybe_unused]] std::optional<std::string_view> subXPath,
+    [[maybe_unused]] std::optional<std::string_view> requestXPath, [[maybe_unused]] uint32_t requestId,
+    std::optional<libyang::DataNode> &output ) noexcept
+{
+    auto rc{ sysrepo::ErrorCode::Ok };
+
+    DBGLOG(
+        "%s: Entering sysrepo oper callback for path '%s'", moduleName.data(),
+        requestXPath.value_or( "<empty>" ).data() );
+
+    try
+    {
+        /* Get the schema paths of the requested path and forward the callback only to matching nodes. */
+        for ( const auto &node : session.getContext().findXPath(
+                  requestXPath ? static_cast<std::string>( *requestXPath )
+                               : static_cast<std::string>( m_root.GetSchemaPath() ) + ":*" ) )
+        {
+            m_root.Load( DataType::kStatePull, node.path() );
+            m_root.InsertNode( DataType::kStatePull, node.path(), output );
+        }
+    }
+    catch ( const std::runtime_error &e )
+    {
+        DBGLOG( "%s: %s", moduleName.data(), e.what() );
+        rc = sysrepo::ErrorCode::OperationFailed;
+
+        session.setErrorMessage( e.what() );
+    }
+
+    DBGLOG( "%s: Leaving sysrepo oper callback.", moduleName.data() );
+
+    return rc;
+}
+
+/* Explicit template instantiation. */
+{% for module in modules %}
+template class CoreModule<core::api::{{ to_camel_case(to_c_variable(module.prefix), True) }}>;
+{% endfor %}
+
+} // namespace core

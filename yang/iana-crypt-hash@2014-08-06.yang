@@ -2,8 +2,7 @@ module iana-crypt-hash {
   namespace "urn:ietf:params:xml:ns:yang:iana-crypt-hash";
   prefix ianach;
 
-  organization
-    "IANA";
+  organization "IANA";
   contact
     "        Internet Assigned Numbers Authority
 
@@ -45,33 +44,13 @@ module iana-crypt-hash {
       "RFC 7317: A YANG Data Model for System Management";
   }
 
-  feature crypt-hash-md5 {
-    description
-      "Indicates that the device supports the MD5
-       hash function in 'crypt-hash' values.";
-    reference
-      "RFC 1321: The MD5 Message-Digest Algorithm";
-  }
-
-  feature crypt-hash-sha-256 {
-    description
-      "Indicates that the device supports the SHA-256
-       hash function in 'crypt-hash' values.";
-    reference
-      "FIPS.180-4.2012: Secure Hash Standard (SHS)";
-  }
-
-  feature crypt-hash-sha-512 {
-    description
-      "Indicates that the device supports the SHA-512
-       hash function in 'crypt-hash' values.";
-    reference
-      "FIPS.180-4.2012: Secure Hash Standard (SHS)";
-  }
-
   typedef crypt-hash {
     type string {
-      pattern "$0$.*|$1$[a-zA-Z0-9./]{1,8}$[a-zA-Z0-9./]{22}|$5$(rounds=\\d+$)?[a-zA-Z0-9./]{1,16}$[a-zA-Z0-9./]{43}|$6$(rounds=\\d+$)?[a-zA-Z0-9./]{1,16}$[a-zA-Z0-9./]{86}";
+      pattern
+        '$0$.*'
+      + '|$1$[a-zA-Z0-9./]{1,8}$[a-zA-Z0-9./]{22}'
+      + '|$5$(rounds=\d+$)?[a-zA-Z0-9./]{1,16}$[a-zA-Z0-9./]{43}'
+      + '|$6$(rounds=\d+$)?[a-zA-Z0-9./]{1,16}$[a-zA-Z0-9./]{86}';
     }
     description
       "The crypt-hash type is used to store passwords using
@@ -116,4 +95,26 @@ module iana-crypt-hash {
        RFC 1321: The MD5 Message-Digest Algorithm
        FIPS.180-4.2012: Secure Hash Standard (SHS)";
   }
+
+  feature crypt-hash-md5 {
+    description
+      "Indicates that the device supports the MD5
+       hash function in 'crypt-hash' values.";
+    reference "RFC 1321: The MD5 Message-Digest Algorithm";
+  }
+
+  feature crypt-hash-sha-256 {
+    description
+      "Indicates that the device supports the SHA-256
+       hash function in 'crypt-hash' values.";
+    reference "FIPS.180-4.2012: Secure Hash Standard (SHS)";
+  }
+
+  feature crypt-hash-sha-512 {
+    description
+      "Indicates that the device supports the SHA-512
+       hash function in 'crypt-hash' values.";
+    reference "FIPS.180-4.2012: Secure Hash Standard (SHS)";
+  }
+
 }

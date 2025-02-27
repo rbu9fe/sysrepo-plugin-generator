@@ -1,52 +1,34 @@
 from libyang.schema import Node as LyNode
 import os
+import re
 
 
 class LibyangTreeFunction:
-    def __init__(self, prefix, parent_node, node, path=None):
-        self.prefix = prefix
-        self.parent_node = parent_node
+    def __init__(self, own_prefix, parent_prefix, node, file_path=None):
+        parent_node = node.parent()
         self.node = node
-        self.path = path
         self.name = to_c_variable(node.name())
+        self.prefix = own_prefix
+        self.parent_prefix = parent_prefix
         self.parent_name = to_c_variable(
             parent_node.name()) if parent_node else None
-        self.model_prefix = self.model_prefix = node.module().name() + ":" \
+        self.model_prefix = node.module().name() + ":" \
             if parent_node and parent_node.module().name() != node.module().name() \
             else ""
-
-    def get_name(self):
-        if self.prefix is None:
-            return self.name
-        return self.prefix + "_" + self.name
+        self.file_path = file_path
 
     def __repr__(self):
-        parent = self.parent_node.name() if self.parent_node != None else None
-        return "[name: {}, parent: {}, function: {}]".format(self.name, parent, self.get_name())
-
-
-class CLibrary:
-    def __init__(self, outdir, name):
-        deps_dir = os.path.join(outdir, "deps")
-        self.lib_dir = os.path.join(deps_dir, name)
-
-    def generate_directories(self):
-        pass
-
-    def generate_files(self):
-        pass
-
-    def get_include_dirs(self):
-        pass
+        return self.prefix
 
 
 class Callback:
-    def __init__(self, path, sufix):
-        self.path = path
-        self.sufix = sufix
+    def __init__(self, schema_path, data_path, prefix):
+        self.schema_path = schema_path
+        self.data_path = data_path
+        self.prefix = prefix
 
     def __repr__(self):
-        return self.path + "=" + self.sufix
+        return self.prefix + "@" + self.schema_path
 
 
 class CDefine:
@@ -79,6 +61,11 @@ def to_camel_case(snake_case, first_upper: bool = False):
     return components[0] + "".join(x.title() for x in components[1:])
 
 
+def format_descr(prefix, description):
+    descr = description.replace("\n", "\n" + prefix)
+    return re.sub(' +', ' ', descr)
+    
+
 def has_children(node):
     return hasattr(node, "children")
 
@@ -96,7 +83,7 @@ def extract_defines(prefix, module):
                          "\"/%s:%s\"" % (module_name, root_node.name()))
         defines.append(define)
 
-        defines_map[root_node.data_path()] = define.name
+        defines_map[root_node.schema_path()] = define.name
 
         node_stack = []
 
@@ -117,7 +104,7 @@ def extract_defines(prefix, module):
             # append to list
             defines.append(define)
 
-            defines_map[node.data_path()] = define.name
+            defines_map[node.schema_path()] = define.name
 
             if has_children(node):
                 for n in node.children():

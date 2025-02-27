@@ -1,0 +1,113 @@
+#pragma once
+
+{% import 'macros.jinja2' as macro %}
+
+{% macro abort(error) -%}
+    {{ None['[ERROR] ' ~ error][0] }}
+{% endmacro -%}
+
+{% macro add_enum(enum) %}
+
+{% set name = to_camel_case(to_c_variable(enum.name), True) %}
+
+/**
+ * @brief Enum from Yang type {{ enum.name }}.
+ */
+enum class {{ name }} {
+    {% for enum in enum.values %}
+    k{{ to_camel_case(to_c_variable(str(enum)), True) }},
+    {% endfor %}
+};
+
+{% endmacro %}
+
+
+{# #include <variant> #}
+
+#include <magic_enum.hpp>
+
+{% if macro.get_list_len(enums) != '0' or macro.get_list_len(bits) != '0' or macro.get_list_len(unions) != '0' %}
+namespace {{ "core::api::" + namespace }} {
+{% endif %}
+
+{% for enum in enums %}
+    {{ add_enum(enum) }}
+{% endfor %}
+
+{% for bit in bits %}
+    {{ add_enum(bit) }}
+{% endfor %}
+
+{# /* Unions: GetValueAsString() in base.hpp is not yet solved how to convert a variant with arbitrary types to a string. Therefore, treat unions as strings for now. */  #}
+{% for union in unions %}
+{% set name = to_camel_case(to_c_variable(union.name), True) %}
+
+/**
+ * @brief Union of Yang type {{ union.name }}.
+ *
+ * @note Yang unions are always treated as strings.
+ */
+using {{ name }} = std::string;
+{# {% set types = [] %} #}
+{# {%- for t in union.types -%}
+    {%- if t.type in user_types -%}
+        {%- if user_types[t.type] not in types -%}
+            {%- set types = types.append(user_types[t.type]) -%}
+        {%- endif -%}
+    {%- elif t.type in static_types -%}
+        {%- if not static_types[t.type] in types -%}
+            {%- set types = types.append(static_types[t.type]) -%}
+        {%- endif -%}
+    {%- else -%}
+        {{ abort("Type '{}' maps to unknown type".format(t.type)) }}
+    {%- endif -%}
+{%- endfor -%}
+{%- set len = macro.get_list_len(types) -%}
+using {{ name }} = std::variant<{%- for t in types -%}
+    {% if loop.index0 > 0 %}, {% endif %}{{ t }}
+{%- endfor -%}>; #}
+{% endfor %}
+
+{% if macro.get_list_len(enums) != '0' or macro.get_list_len(bits) != '0' or macro.get_list_len(unions) != '0' %}
+}
+{% endif %}
+
+{% macro add_enum_name(enum) %}
+
+{% set var_name = to_c_variable(enum.name) %}
+{% set enum_name = to_camel_case(var_name, True) %}
+
+/**
+ * @brief Specialization of @p magic_enum::enum_name for names of all values that are defined for enumeration {{ enum_name }}.
+ */
+template<>
+constexpr customize_t enum_name<{{ "core::api::" + namespace }}::{{ enum_name }}>(
+    {{ "core::api::" + namespace }}::{{ enum_name }} {{ var_name }} ) noexcept {
+    switch ( {{ var_name }} ) {
+        using enum {{ "core::api::" + namespace }}::{{ enum_name }};
+        {% for entry in enum.values %}
+            case k{{ to_camel_case(to_c_variable(str(entry.name)), True) }}:
+                return "{{ entry.name }}";
+        {% endfor %}
+    }
+
+    return invalid_tag;
+}
+
+{% endmacro %}
+
+{% if macro.get_list_len(enums) != '0' or macro.get_list_len(bits) != '0' %}
+namespace magic_enum::customize{
+{% endif %}
+
+{% for enum in enums %}
+    {{ add_enum_name(enum) }}
+{% endfor %}
+
+{% for bit in bits %}
+    {{ add_enum_name(bit) }}
+{% endfor %}
+
+{% if macro.get_list_len(enums) != '0' or macro.get_list_len(bits) != '0' %}
+}
+{% endif %}

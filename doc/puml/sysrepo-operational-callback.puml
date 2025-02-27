@@ -1,0 +1,53 @@
+@startuml
+
+participant "sysrepo" as SYSREPO
+participant "module" as MODULE
+participant "root node" as ROOT
+collections "children" as CHILDREN
+
+SYSREPO -> MODULE: ""operCallback()""
+
+activate MODULE
+    MODULE -> ROOT: ""Load(DataType::kStatePull)""
+    note left
+        Refresh the cache of state nodes
+        of the //pull// type with a current
+        snapshot of the system.
+    end note
+
+    activate ROOT
+        loop children
+            ROOT -> CHILDREN: ""Load(data_type)""
+            activate CHILDREN
+            deactivate CHILDREN
+            note right
+                Container / list: Forward to children.
+                Leaf / leaf-list: Load data from system.
+            end note
+        end
+        ROOT --> MODULE
+    deactivate ROOT
+
+    MODULE -> ROOT: ""GetNode(DataType::kStatePull)""
+    note left
+        Now get the //pull// state data.
+    end note
+
+    activate ROOT
+        loop children
+            ROOT -> CHILDREN: ""GetNode(data_type)""
+            activate CHILDREN
+            deactivate CHILDREN
+            note right
+                Container / list: Forward to children.
+                Leaf / leaf-list: Return data node.
+            end note
+        end
+        ROOT --> MODULE: Merged nodes of children
+    deactivate ROOT
+
+    MODULE --> SYSREPO: Yang data node
+deactivate MODULE
+
+
+@enduml

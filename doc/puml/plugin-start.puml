@@ -1,0 +1,115 @@
+@startuml
+
+participant "main / sysrepo_plugind" as MAIN
+participant "plugin" as PLUGIN
+participant "module" as MODULE
+participant "root node" as ROOT
+collections "children" as CHILDREN
+
+activate MAIN
+    MAIN -> PLUGIN: ""sr_plugin_init_cb()""
+    activate PLUGIN
+
+    PLUGIN -> PLUGIN: Register modules
+    note left
+        Constructs the root
+        object of each module
+    end note
+
+    loop modules
+        PLUGIN -> MODULE: ""initializeDatastore(datastore)""
+        activate MODULE
+
+            MODULE -> ROOT: ""GetNode(data_type)""
+            note left
+                ""data_type"":
+                ""DataType::kStatePull"" or ""DataType::kConfig""
+                depending on datastore. ""DataType::kStatePush""
+                is not relevant here as it'll be collected on demand.
+            end note
+
+            activate ROOT
+                loop children
+                    ROOT -> CHILDREN: ""GetNode(data_type)""
+                    activate CHILDREN
+                    deactivate CHILDREN
+                    note right
+                        Container / list: Forward to children.
+                        Leaf / leaf-list: Return data node.
+                    end note
+                end
+                ROOT --> MODULE: Merged nodes of children
+            deactivate ROOT
+
+            alt datastore == Running
+                MODULE -> MODULE: ""WriteDatastore(Candidate)""
+                note right
+                    Running **//must not//** be committed
+                    yet, prepare Candidate instead!
+                end note
+            else datastore == Operational
+                MODULE -> MODULE: ""WriteDatastore(Operational)""
+            end
+
+        MODULE --> PLUGIN
+        deactivate MODULE
+    end
+
+    PLUGIN -> PLUGIN: Copy candidate to running
+    note left
+        Atomic commit required
+        to satisfy possible Yang
+        augmentation constraints.
+        
+        Current system state
+        is now fully loaded.
+    end note
+
+    loop modules
+        PLUGIN -> PLUGIN: Register operational subscriptions
+        PLUGIN -> PLUGIN: Register running subscriptions
+        PLUGIN -> PLUGIN: Register RPC subscriptions
+    end
+
+    loop modules
+        PLUGIN -> MODULE: ""applyDatastoreValues(running)""
+        activate MODULE
+
+            MODULE -> MODULE: ""GetData(Startup)""
+            MODULE -> MODULE: ""WriteDatastore(Candidate)""
+            note right
+                Running **//must not//** be committed
+                yet, prepare Candidate instead!
+            end note
+
+            MODULE --> PLUGIN
+        deactivate MODULE
+    end
+
+    PLUGIN -> PLUGIN: Copy candidate to running
+    note left
+        Atomic commit required again.
+        Invokes subscription handlers
+        just like startup config was
+        requested by some external
+        application.
+    end note
+
+    PLUGIN --> MAIN
+    deactivate PLUGIN
+
+    ... **//Wait for teardown request, meanwhile handle sysrepo operational and configuration change callbacks triggered by user requests...//** ...
+    MAIN -> PLUGIN: ""sr_plugin_cleanup_cb()""
+
+    activate PLUGIN
+    PLUGIN -> PLUGIN: Destroy modules
+    note left
+        Destructs the root class
+        of each module
+    end note
+
+    PLUGIN --> MAIN
+    deactivate PLUGIN
+deactivate MAIN
+
+@enduml

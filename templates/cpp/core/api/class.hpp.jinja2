@@ -1,0 +1,261 @@
+#pragma once
+
+#include <vector>
+#include <optional>
+
+#include <srpcpp.hpp>
+#include <libyang-cpp/DataNode.hpp>
+
+#include "core/api/{{ module.name }}/types.hpp"
+#include "core/api/base.hpp"
+
+{% import 'macros.jinja2' as macro %}
+
+#include "{{ node.name() }}-ctx.hpp"
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+{% for child in node.children() %}
+{% if not child.deprecated() %}
+{% set comment_out = "" if (child.nodetype() == LyNode.LEAF and child.is_key()) else comment %}
+{{ comment_out }}#include "{{ child.name() }}/{{ child.name() }}.hpp"
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% set class = to_camel_case(to_c_variable(prefix), True) %}
+{% if children_skip_prefix %}
+    {% set children_prefix = "" %}
+{% else %}
+    {% set children_prefix = to_camel_case(to_c_variable(prefix), True) %}
+{% endif %}
+
+{# Leafs and list keys have a data type. Try to get their types in the following order: 
+   - custom user types
+   - base of custom user types
+   - Leafs: enum or bits from Yang model
+   - List keys: keys from Yang model (known_keys)
+   - generic types from walker
+   If it expands to None then raise an error.
+#}
+
+{% if node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST] %}
+    {% set type = macro.get_node_type(node, user_types, static_types, node_types, node_types_namespace, node_type_name, to_c_variable, to_camel_case) %}
+{% endif %}
+
+namespace core::api {
+
+{% if node.get_parent() %}
+{% set parent_ctx = to_camel_case(to_c_variable(parent_prefix), True) + "Ctx" %}
+{% else %}
+{% set parent_ctx = "::core::PluginContext" %}
+{% endif %}
+
+/**
+ * @brief {% if node.get_parent() %}Class for Yang path {{ node.data_path() }}{% else %}Root class for Yang module {{ module.name }}{% endif %}.
+{% if node.description() %}
+ *
+ * {{ format_descr(" * ", node.description()) }}
+{% endif %}
+ */
+class {{ class }}: public
+{%- if node.nodetype() == LyNode.CONTAINER %}
+    YangContainer{% if node.config_false() %}State{% else %}Config{% endif %}
+{% elif node.nodetype() == LyNode.LIST %}
+    YangList{% if node.config_false() %}State{% else %}Config{% endif %}
+{% elif node.nodetype() == LyNode.LEAF %}
+    {% if node.is_key() %}
+        YangKeyLeaf{% if node.config_false() %}State{% else %}Config{% endif %}<{{ type }}>
+    {% else %}
+        YangLeaf{% if node.config_false() %}State{% else %}Config{% endif %}<{{ type }}>
+    {% endif %}
+{% elif node.nodetype() == LyNode.LEAFLIST %}
+    YangLeafList{% if node.config_false() %}State{% else %}Config{% endif %}<{{ type }}>
+{% elif node.nodetype() == LyNode.RPC %}
+    YangRpc
+{% endif %}
+{
+public:
+    /**
+     * @brief Constructor for class handling Yang path {{ node.data_path() }}.
+     *
+{% if node.get_parent() %}
+    {% if node.nodetype() not in [LyNode.CONTAINER, LyNode.LIST] or macro.get_list_len(node.children()) == "0" %}
+     * @param ctx           Context from parent node. Can be stored in API context (see @ref context.hpp).
+    {% else %}
+     * @param ctx           Context from parent node. Integrated into @p m_ctx, which is passed to child nodes
+     *                      and can also be stored in API context (see @ref context.hpp).
+    {% endif %}
+     * @param parent_path   Xpath of the parent node.
+{% else %}
+     * @param ctx           Plugin context. Integrated into @p m_ctx, which is passed to child nodes
+     *                      and can also be stored in API context (see @ref context.hpp).
+{% endif %}
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+     * @param system_change System change relation of this node.
+{% endif %}
+{% if macro.get_list_len(node.if_features()) != '0' %}
+     * 
+     * @p note This node is only valid if all of the following features are enabled: [{% for feature in node.if_features() %}{% if loop.index0 > 0 %}, {% endif %}{{ feature.tree().feature().name() }}{% endfor %}]
+{% endif %}
+     */
+    explicit {{ class }}({% if node.get_parent() %}const {% endif %}{{ parent_ctx }}& ctx{% if node.get_parent() %}, const std::string& parent_path{% endif %}
+    {% if node.nodetype() == LyNode.LIST -%}
+        {% for key in node.keys() -%}
+            , const {{ macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) -}}& {{ to_c_variable(node.name() + "-" + key.name()) }}
+        {% endfor -%}
+    {% elif node.nodetype() == LyNode.LEAF and node.is_key() -%}
+        , const {{ type }}& {{ to_c_variable(node.name()) }}
+    {% endif -%}
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+        , SystemChange system_change
+    {% endif %}
+    );
+
+    /**
+     * @brief Destructor for class handling Yang path {{ node.data_path() }}.
+     */
+    ~{{ class }}() final;
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+    /**
+     * @brief Load current system settings into local cache for class handling Yang path {{ node.data_path() }}.
+     *
+     * Called to update the internal cache with the current system settings.
+     *
+     * @param data_type     Data type that shall be loaded from the system.
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+     * @param request_path  The requested schema path.
+{% endif %}
+     */
+    void Load(DataType data_type{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}, std::string_view request_path{% endif %}) final;
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not node.config_false() and not (node.nodetype() == LyNode.LEAF and node.is_key() ) %}
+    /**
+     * @brief Apply current cache into system settings for class handling Yang path {{ node.data_path() }}.
+     *
+     * Called when applying the startup datastore or running datastore changes to the system.
+     */
+    void Store() final;
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+    /**
+     * @brief Get current cache as a Yang data node provided in @p output for class handling Yang path {{ node.data_path() }}.
+     *
+     * Called when generating the operational or running datastore.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+     * @param request_path  The requested schema path.
+{% endif %}
+     * @param output        The data tree to insert the node into. In case the data is not present then its node is removed from @p output in case it's existing therein.
+     */
+    void InsertNode(DataType data_type{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}, std::string_view request_path{% endif %}, std::optional<libyang::DataNode>& output) const final;
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+    /**
+     * @brief Set current cache from a changed Yang data node for class handling Yang path {{ node.data_path() }}.
+     *
+     * Called either by internal changes to the operational (push-data) datastore or by sysrepo change callbacks of the running datastore.
+     *
+     * @param change        Sysrepo change information.
+{% if not node.config_false() %}
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+{% endif %}
+     */
+    void SetNode(const sysrepo::Change& change{% if not node.config_false() %}, CacheState cache_state{% endif %}) final;
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not node.config_false() and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+    /**
+     * @brief Validate the current cache for class handling Yang path {{ node.data_path() }}.
+     *
+     * Called right before applying the startup datastore or running datastore changes to the system.
+     *
+     * @throw A @p std::system_error with error category @ref CSysrepoErrCategory in case of validation error.
+     *        Example: `throw std::system_error( std::error_code( static_cast<int>( sysrepo::ErrorCode::ValidationFailed ), CSysrepoErrCategory() ), "Validation failed because..." );`
+     */
+    void Validate() const noexcept(false) final;
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] and not node.config_false() %}
+    /**
+     * @brief Restore the current cache from its backup for class handling Yang path {{ node.data_path() }}.
+     *
+     * Called by handling the Abort event in a sysrepo change callback.
+     */
+    void RevertNode() final;
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] and not node.config_false() %}
+    /**
+     * @brief Finalize previously applied (and perhaps reverted) changes for class handling Yang path {{ node.data_path() }}.
+     *
+     * Called by handling the Done or Abort event in a sysrepo change callback.
+     */
+    void Finalize() final;
+{% endif %}
+
+{% if not node.get_parent() %}
+    /**
+     * @brief Collect the list of RPC callbacks of the Yang model {{ module.name }}.
+     *
+     * Called initially to register RPC callbacks.
+     */
+    std::list<srpc::RpcCallback> GetRpcCallbacks();
+{% endif %}
+
+private:
+{% set ctx = class + "Ctx" %}
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+
+    /** Owned context, passed to child nodes. */
+    {{ ctx }} m_ctx;
+
+    /** All children of this Yang node. */
+    {% for child in node.children() %}
+        {% if not child.deprecated() %}
+            {% set optional = macro.get_list_len(child.if_features()) != '0' %}
+            {% if child.nodetype() == LyNode.LIST %}
+                {% set len = macro.get_list_len(child.keys()) %}
+                {% if len == "1" %}
+                    {% set key_type = macro.get_key_type(child.keys() | first, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) %}
+                    {{ comment }}{% if optional %}std::optional<{% endif %}std::map<{{ key_type }}, List{% if child.config_false() %}State{% else %}Config{% endif %}Node<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>{% if key_type == "std::string"%}, std::less<>{% endif %}>{% if optional %}>{% endif %} m_{{ to_c_variable(child.name()) }};
+                {% else %}
+                    {{ comment }}{% if optional %}std::optional<{% endif %}std::map<std::tuple<{% for key in child.keys() %}{% if loop.index0 > 0 %}, {% endif %}{{ macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) }} {% endfor %}>, List{% if child.config_false() %}State{% else %}Config{% endif %}Node<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>>{% if optional %}>{% endif %} m_{{ to_c_variable(child.name()) }};
+                {% endif %}
+            {% elif child.nodetype() == LyNode.RPC %}
+                {{ comment }}{% if optional %}std::optional<{% endif %}RpcNode<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>{% if optional %}>{% endif %} m_{{ to_c_variable(child.name()) }};
+            {% elif child.nodetype() == LyNode.LEAF and child.is_key() %}
+                {% if optional %}std::optional<{% endif %}KeyNode<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>{% if optional %}>{% endif %} m_{{ to_c_variable(child.name()) }};
+            {% else %}
+                {% if child.config_false() %}
+                    {{ comment }}{% if optional %}std::optional<{% endif %}StateNode<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>{% if optional %}>{% endif %} m_{{ to_c_variable(child.name()) }};
+                {% else %}
+                    {{ comment }}{% if optional %}std::optional<{% endif %}ConfigNode<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>{% if optional %}>{% endif %} m_{{ to_c_variable(child.name()) }};
+                {% endif %}
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+{% elif node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST] %}
+
+    /** Owned context. */
+    {{ ctx }} m_ctx;
+{% elif node.nodetype() in [LyNode.RPC] %}
+
+    /**
+     * @brief Sysrepo RPC callback for class handling Yang path {{ node.data_path() }}.
+     *
+     * @param input     Data tree of input parameters. Always points to the RPC itself, even for nested operations.
+     * @param output    Data tree for appending any output parameters, the operation root node is provided.
+     */
+    void RpcCallback( const libyang::DataNode input, libyang::DataNode &output ) final;
+
+    /** Owned context. */
+    {{ ctx }} m_ctx;
+{% endif %}
+};
+
+}

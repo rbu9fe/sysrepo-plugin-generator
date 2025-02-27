@@ -1,0 +1,18 @@
+[generator]
+name = "ietf-factory-default"
+
+[yang.modules]
+main = [
+    {
+        name = "ietf-factory-default", 
+        prefix = "ietf-factory-default",
+        skip_prefix_mode = "all",
+        disable = false
+    }
+]
+other = []
+
+[yang.modules.features]
+"ietf-factory-default" = []
+
+[yang.types]

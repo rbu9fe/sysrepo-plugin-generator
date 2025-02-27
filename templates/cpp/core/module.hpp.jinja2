@@ -1,0 +1,116 @@
+#pragma once
+
+#include <memory>
+
+#include <sysrepo-cpp/sysrepo-wrapper.hpp>
+#include <srpcpp.hpp>
+
+#include "core/api/logging.hpp"
+
+#include "core/api/base.hpp"
+#include "core/context.hpp"
+
+namespace core {
+
+/**
+ * @brief Core initializer class for datastores.
+ */
+template<typename T>
+class CoreDatastoreInitializer : public srpc::IDatastoreInitializer
+{
+public:
+    explicit CoreDatastoreInitializer( const std::string &module_name, sysrepo::Datastore datastore, T &data );
+
+    virtual ~CoreDatastoreInitializer();
+
+    void initializeDatastore( Sysrepo::Session &session ) final;
+
+    std::list<std::string> getPaths() final;
+
+private:
+    const std::string m_module_name;
+    sysrepo::Datastore m_datastore;
+    T &m_root;
+};
+
+/**
+ * @brief Core applier class for applying the startup into the running datastore.
+ */
+template<typename T>
+class CoreDatastoreApplier : public srpc::IDatastoreApplier
+{
+public:
+    explicit CoreDatastoreApplier( const std::string &module_name, T &data );
+
+    virtual ~CoreDatastoreApplier() final;
+
+    void applyDatastoreValues( Sysrepo::Session &session ) final;
+
+    std::list<std::string> getPaths() final;
+
+private:
+    const std::string m_module_name;
+    T &m_root;
+};
+
+/**
+ * @brief Core module.
+ */
+template<typename T>
+class CoreModule : public srpc::IModule<core::PluginContext>
+{
+public:
+    /**
+     * @brief Core module constructor. Allocates each context.
+     */
+    explicit CoreModule( core::PluginContext &plugin_ctx, const std::string &module_name );
+
+    /**
+     * @brief Get all operational callbacks which the module should use.
+     */
+    std::list<srpc::OperationalCallback> getOperationalCallbacks() final;
+
+    /**
+     * @brief Get all module change callbacks which the module should use.
+     */
+    std::list<srpc::ModuleChangeCallback> getModuleChangeCallbacks() final;
+
+    /**
+     * @brief Get all RPC callbacks which the module should use.
+     */
+    std::list<srpc::RpcCallback> getRpcCallbacks() final;
+
+    /**
+     * @brief Get module module.
+     */
+    const char *getName() final;
+
+    /**
+     * @brief Core module destructor.
+     */
+    ~CoreModule() final;
+
+    /**
+     * @brief Sysrepo change callback delegating callback events to the registered module's Yang root node classes.
+     */
+    sysrepo::ErrorCode ChangeCb(
+        Sysrepo::SessionParam session, uint32_t subscriptionId, std::string_view moduleName,
+        std::optional<std::string_view> subXPath, sysrepo::Event event, uint32_t requestId ) noexcept;
+
+    /**
+     * @brief Sysrepo operational callback delegating callbacks to the registered module's Yang root node classes.
+     */
+    sysrepo::ErrorCode OperCb(
+        Sysrepo::SessionParam session, uint32_t subscriptionId, std::string_view moduleName,
+        std::optional<std::string_view> subXPath, std::optional<std::string_view> requestXPath, uint32_t requestId,
+        std::optional<libyang::DataNode> &output ) noexcept;
+
+private:
+    // Yang module name served by this instance
+    const std::string m_module_name;
+
+    // Yang root node of the module
+    T m_root;
+};
+
+}

@@ -1,0 +1,17 @@
+[generator]
+name = "ietf-hardware"
+
+[yang.modules]
+main = [
+    {
+        name = "ietf-hardware", 
+        prefix = "hw",
+        skip_prefix_mode = "root",
+        disable = false
+    }
+]
+other = ["iana-hardware"]
+
+[yang.modules.features]
+
+[yang.types]

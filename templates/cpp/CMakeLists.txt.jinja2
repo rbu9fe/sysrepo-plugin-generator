@@ -1,51 +1,76 @@
-cmake_minimum_required(VERSION 3.0)
-project({{project_name}})
+{% set project_name = "sysrepo-plugin-" + module_name %}
+project({{ project_name }})
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/CMakeModules")
+set(PLUGIN_LIBRARY_NAME srplg-{{ module_name }})
+set(PLUGIN_EXECUTABLE_NAME {{ project_name }})
 
-set(PLUGIN_LIRBARY_NAME {{project_name}})
-
-find_package(SYSREPOCPP REQUIRED)
-find_package(LIBYANGCPP REQUIRED)
-find_package(SYSREPO REQUIRED)
-find_package(LIBYANG REQUIRED)
+find_package(sysrepo-cpp REQUIRED)
+find_package(libyang-cpp REQUIRED)
+find_package(srpcpp REQUIRED)
+find_package(sysrepo REQUIRED)
+find_package(magic_enum REQUIRED)
 
 include_directories(
-    ${SYSREPOCPP_INCLUDE_DIRS}
-    ${LIBYANGCPP_INCLUDE_DIRS}
-    ${SRPCPP_INCLUDE_DIRS}
-    ${CMAKE_SOURCE_DIR}/src
+{% if src_folder != "" %}
+    {{ src_folder }}
+{% else %}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+{% endif %}
 )
-
-set(
-    PLUGIN_HEADERS
-
-{% for header in headers %}
-    {{header}}
-{% endfor %}
-)
-
 
 set(
     PLUGIN_SOURCES
 
-{% for src in sources %}
-    {{src}}
+{% for entry in files %}
+{% if entry.get_file()[-3:] == "cpp" %}
+    {% if entry.get_disabled() %}    # {% else %}    {% endif %}{{entry.get_file()}}
+{% endif %}
 {% endfor %}
 )
 
+# plugin as a shared library, can be installed as a sysrepo daemon plugin
 add_library(
-    ${PLUGIN_LIRBARY_NAME}
-    MODULE
+    ${PLUGIN_LIBRARY_NAME}
+    SHARED
+
     ${PLUGIN_SOURCES}
 )
 
-target_link_libraries(
-    ${PLUGIN_LIRBARY_NAME}
-
-    ${SYSREPO_LIBRARIES}
-    ${LIBYANG_LIBRARIES}
-    ${SYSREPOCPP_LIBRARIES}
-    ${LIBYANGCPP_LIBRARIES}
+set_target_properties(${PLUGIN_LIBRARY_NAME} PROPERTIES
+    CXX_VISIBILITY_PRESET hidden # -fvisibility=hidden
+    C_VISIBILITY_PRESET hidden # -fvisibility=hidden
+    VISIBILITY_INLINES_HIDDEN TRUE # -fvisibility-inlines-hidden
+    POSITION_INDEPENDENT_CODE ON # -fPIC
 )
+
+target_link_libraries(
+    ${PLUGIN_LIBRARY_NAME}
+
+    sysrepo-cpp::sysrepo-cpp
+    libyang-cpp::libyang-cpp
+    srpcpp::srpcpp
+    magic_enum::magic_enum
+)
+
+# install as sysrepo daemon plugin
+# install(TARGETS ${PLUGIN_LIBRARY_NAME} DESTINATION usr/sysrepo-plugind/plugins)
+
+# plugin as an executable
+add_executable(
+    ${PLUGIN_EXECUTABLE_NAME}
+
+{% if src_folder != "" %}
+    {{ src_folder }}/main.cpp
+{% else %}
+    main.cpp
+{% endif %}
+)
+
+target_link_libraries(
+    ${PLUGIN_EXECUTABLE_NAME}
+
+    ${PLUGIN_LIBRARY_NAME}
+)
+
+# install executable for test purposes
+install(TARGETS ${PLUGIN_EXECUTABLE_NAME} DESTINATION bin)

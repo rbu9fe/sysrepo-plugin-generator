@@ -1,0 +1,75 @@
+{% macro abort(error) -%}
+    {{ None['[ERROR] ' ~ error][0] }}
+{% endmacro -%}
+
+{% macro get_list_len(iter) -%}
+    {% set ns = namespace(length=0) -%}
+    {% for entry in iter -%}
+        {% set ns.length = ns.length + 1 -%}
+    {% endfor -%}
+    {{- ns.length -}}
+{% endmacro -%}
+
+{% macro get_node_type(node, user_types, static_types, node_types, node_types_namespace, node_type_name, to_c_variable, to_camel_case) -%}
+    {# First try the type name, then its basename and finally the node name (e.g. for finding an enumeration). -#}
+    {% set ns = namespace(type=None) -%}
+    {% for name in [node_type_name, node.type().basename(), node.name()] -%}
+        {% if ns.type == None -%}
+            {% set type_name = name %}
+            {% if node.type().basename() == "leafref" %}
+                {% set type_name = node.type().leafref_type().name() %}
+            {% endif %}
+            {% if type_name in user_types -%}
+                {% set ns.type = user_types[type_name] -%}
+            {% elif type_name in node_types -%}
+                {% if node.type().basename() == "bits" %}
+                    {% set ns.type = "magic_enum::containers::set<" + node_types_namespace + "::" + to_camel_case(to_c_variable(type_name), True) + ">" -%}
+                {% else %}
+                    {% set ns.type = node_types_namespace + "::" + to_camel_case(to_c_variable(type_name), True) -%}
+                {% endif %}
+            {% elif type_name in static_types -%}
+                {% set ns.type = static_types[type_name] -%}
+            {% endif -%}
+        {% endif -%}
+    {% endfor -%}
+
+    {# Provoke an error when the type is unknown. #}
+    {% if ns.type == None -%}
+        {{ abort("Type '{}' maps to unknown type (base: '{}') in leaf: {}".format(node.type().name(), node.type().basename(), node.data_path())) }}
+    {% else -%}
+        {# Return result #}
+        {{- ns.type -}}
+    {% endif %}
+{% endmacro -%}
+
+{% macro get_key_type(key, user_types, static_types, known_keys, key_types_namespace, to_c_variable, to_camel_case) -%}
+    {# First try the key's type name, then its basename and finally the key name (e.g. for finding an enumeration). -#}
+    {% set ns = namespace(type=None, found_key=False) -%}
+    
+    {% for name in [key.type().name(), key.type().basename(), key.name()] -%}
+        {% set ns.found_key = False -%}
+        {% for known_key in known_keys -%}
+            {% if known_key.name == name -%}
+                {% set ns.found_key = True -%}
+            {% endif -%}
+        {% endfor -%}
+
+        {% if ns.type == None -%}
+            {% if name in user_types -%}
+                {% set ns.type = user_types[key.type().name()] -%}
+            {% elif ns.found_key == True -%}
+                {% set ns.type = key_types_namespace + "::" + to_camel_case(to_c_variable(name), True) -%}
+            {% else -%}
+                {% set ns.type = static_types[key.type().basename()] -%}
+            {% endif -%}
+        {% endif -%}
+    {% endfor -%}
+
+    {# Provoke an error when the type is unknown. #}
+    {% if ns.type == None -%}
+        {{ abort("Key type {} is unknown (base: {}) in key: {}".format(key.type().name(), key.type().basename(), key.data_path())) }}
+    {% else -%}
+        {# Return result #}
+        {{- ns.type -}}
+    {% endif -%}
+{% endmacro -%}

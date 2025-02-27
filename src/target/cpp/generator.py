@@ -2,10 +2,13 @@ import logging
 import os
 import shutil
 import subprocess
+import pathlib
 
 import jinja2
 
 import libyang
+
+from pprint import pformat
 
 from typing import List, Dict, Any, Optional
 
@@ -14,34 +17,71 @@ from core.generator import Generator
 
 from core.log.filters import DebugLevelFilter, InfoLevelFilter
 
-from .walkers.sub.change import ChangeSubscriptionWalker
-from .walkers.sub.oper import OperSubscriptionWalker
-from .walkers.sub.rpc import RPCSubscriptionWalker
-from .walkers.yang.tree import YangTreeWalker
+from .walkers.api.cppclass import ClassAPIWalker
+from .walkers.types import TypesWalker
 
-from core.utils import to_camel_case, to_c_variable
+from core.utils import to_camel_case, to_c_variable, format_descr
 
 from libyang.schema import Node as LyNode
 
 
+class ModuleGenerator:
+    def __init__(self, ly_mod, name, prefix, disable, skip_prefix_mode):
+        self.ly_mod: libyang.Module = ly_mod
+        self.name: str = name
+        self.prefix: str = prefix
+        self.disable: bool = disable
+        self.skip_prefix_mode: bool = skip_prefix_mode
+
+    def get_ly_module(self) -> libyang.Module:
+        return self.ly_mod
+    
+    def get_name(self) -> str:
+        return self.name
+    
+    def get_prefix(self) -> str:
+        return self.prefix
+    
+    def get_disable(self) -> bool:
+        return self.disable
+    
+    def get_skip_prefix_mode(self) -> bool:
+        return self.skip_prefix_mode
+
+class YangNodeType:
+    def __init__(self, nodetype):
+        self.type: int = nodetype
+
+    def __str__(self):
+        return "Container" if self.type == LyNode.CONTAINER else \
+            "List" if self.type == LyNode.LIST else \
+            "Leaf" if self.type == LyNode.LEAF else \
+            "Leaflist" if self.type == LyNode.LEAFLIST else \
+            "RPC" if self.type == LyNode.RPC else \
+            "<unknown>"
+
+
+class GeneratedFile:
+    def __init__(self, file, disabled=False):
+        self.file: str = file
+        self.disabled: bool = disabled
+
+    def __str__(self):
+        return ("[Disabled] " if self.disabled else "[Enabled]  ") + self.file
+
+    def get_file(self):
+        return self.file
+
+    def get_disabled(self):
+        return self.disabled
+
+
 class CPPGenerator(Generator):
-    # walkers
-    change_sub_walker: ChangeSubscriptionWalker
-    oper_sub_walker: OperSubscriptionWalker
-    rpc_sub_walker: RPCSubscriptionWalker
-    yang_tree_walker: YangTreeWalker
-
-    # libyang
-    ly_mod: libyang.Module
-
-    # logger
-    logger: logging.Logger
-
     def __init__(self, yang_dir: str, out_dir: str, config: GeneratorConfiguration):
         super().__init__(yang_dir, out_dir, config)
 
         # setup logger for the generator
-        self.logger = logging.getLogger("CPPGenerator")
+        self.logger: logging.Logger = logging.getLogger("CPPGenerator")
         self.logger.setLevel(logging.DEBUG)
 
         # Debug level handler
@@ -64,46 +104,32 @@ class CPPGenerator(Generator):
 
         self.logger.info("Starting C++ generator")
 
-        # setup jinja2 environment
-        self.jinja_env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader("templates/c/"),
-            autoescape=jinja2.select_autoescape(),
-            trim_blocks=True,
-            lstrip_blocks=True
-        )
-
         # initialize libyang and jinja2
+        self.modules: List[ModuleGenerator] = []
         self.__setup_libyang_ctx(yang_dir)
         self.__setup_jinja2_env()
 
+        # list of generated files
+        self.generated_files: List[GeneratedFile] = []
+
         # setup and run walkers
-        self.source_dir = os.path.join(out_dir, "src")
-        self.generated_files = []
+        self.source_dir = out_dir
 
-        self.change_sub_walker = ChangeSubscriptionWalker(
-            self.config.get_prefix(), self.ly_mod.children(), self.config.get_yang_configuration().get_prefix_configuration())
-        self.oper_sub_walker = OperSubscriptionWalker(
-            self.config.get_prefix(), self.ly_mod.children(), self.config.get_yang_configuration().get_prefix_configuration())
-        self.rpc_sub_walker = RPCSubscriptionWalker(
-            self.config.get_prefix(), self.ly_mod.children(), self.config.get_yang_configuration().get_prefix_configuration())
-        self.yang_tree_walker = YangTreeWalker(
-            self.config.get_prefix(), self.ly_mod.children(), self.config.get_yang_configuration().get_prefix_configuration())
+        for module in self.modules:
+            module.class_api_walker = ClassAPIWalker(
+                module.get_prefix(), module.get_skip_prefix_mode(), module.get_ly_module().children(), self.source_dir)
+            module.types_walker = TypesWalker(
+                module.get_prefix(), module.get_ly_module().children())
 
-        # run walkers
-        walkers = [
-            # sub walkers
-            self.change_sub_walker,
-            self.oper_sub_walker,
-            self.rpc_sub_walker,
-            # yang walkers
-            self.yang_tree_walker,
-        ]
+            # run walkers
+            walkers = [
+                module.class_api_walker,
+                module.types_walker
+            ]
 
-        for walker in walkers:
-            walker.walk()
+            for walker in walkers:
+                walker.walk()
 
-        [self.logger.info("oper callbacks: {}".format(
-            self.oper_sub_walker.get_callbacks()))]
 
     def __setup_libyang_ctx(self, yang_dir: str):
         self.ctx = libyang.Context(yang_dir)
@@ -112,59 +138,55 @@ class CPPGenerator(Generator):
         yang_cfg = self.config.get_yang_configuration()
         mod_cfg = yang_cfg.get_modules_configuration()
 
-        # load main module
-        self.ctx.load_module(mod_cfg.get_main_module())
-
         # load features (optional, if None then all are enabled)
         features = mod_cfg.get_features()
 
+        # load main modules
+        for module in mod_cfg.get_main_modules():
+            m = module.get_name()
+            mod = self.ctx.load_module(m, None, "*" if not m in features else features[m])
+            enabled_features = [feature.name() for feature in mod.features() if feature.state()]
+            self.logger.info("Loaded module {} with features: {}".format(mod.name(), ", ".join(enabled_features) if len(enabled_features) > 0 else "<none>"))
+
         # load all needed modules
         for m in yang_cfg.get_modules_configuration().get_other_modules():
-            self.ctx.load_module(m)
-            # only enable the configured features
-            self.__enable_configured_features(self.ctx.get_module(m), features)
+            mod = self.ctx.load_module(m, None, "*" if not m in features else features[m])
+            enabled_features = [feature.name() for feature in mod.features() if feature.state()]
+            self.logger.info("Loaded module {} with features: {}".format(mod.name(), ", ".join(enabled_features) if len(enabled_features) > 0 else "<none>"))
 
-        # use main module for plugin generation
-        self.ly_mod = self.ctx.get_module(mod_cfg.get_main_module())
+        # use main modules for plugin generation
+        for module in mod_cfg.get_main_modules():
+            ly_mod = self.ctx.get_module(module.get_name())
+            self.modules.append(ModuleGenerator(ly_mod, module.get_name(), module.get_prefix(), module.get_disable(), module.get_skip_prefix_mode()))
 
-        # only enable the configured features
-        self.__enable_configured_features(self.ly_mod, features)
-
-        self.logger.info("Loaded module {}".format((self.ly_mod.name())))
-        self.logger.info(
-            "Other modules loaded into the libyang context: {}".format(mod_cfg.get_other_modules()))
+            self.logger.info("Loaded module {}".format((ly_mod.name())))
 
     def __setup_jinja2_env(self):
         self.jinja_env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader("templates/cpp/"),
+            loader=jinja2.FileSystemLoader(["templates/cpp/", "templates/cpp/utils/"]),
+            extensions=['jinja2.ext.loopcontrols'],
             autoescape=jinja2.select_autoescape(),
             trim_blocks=True,
             lstrip_blocks=True
         )
 
-    def __enable_configured_features(self, module, features: Optional[List[str]]):
-        self.logger.info("Features in module {}:".format(module.name()))
-        module.feature_disable_all()
-        for feature in module.features():
-            if features == None or feature.name() in features:
-                module.feature_enable(feature.name())
-                self.logger.info("\tEnabled feature {} in module {}".format(feature, module.name()))
-            else:
-                self.logger.info("\tDisabled feature {} in module {}".format(feature, module.name()))
-
     def generate_directories(self):
-        cmake_modules_dir = os.path.join(self.out_dir, "CMakeModules")
         plugin_dir = os.path.join(self.source_dir, "core")
         dirs = [
             self.source_dir,
             plugin_dir,
-            cmake_modules_dir,
-            os.path.join(plugin_dir, "sub"),
-            os.path.join(plugin_dir, "yang"),
             os.path.join(plugin_dir, "api"),
-            os.path.join(plugin_dir, "data"),
         ]
 
+        for dir in dirs:
+            if not os.path.exists(dir):
+                os.mkdir(dir)
+
+        for module in self.modules:
+            self.__generate_walker_dirs(module.class_api_walker)
+
+    def __generate_walker_dirs(self, walker):
+        dirs = walker.get_directories()
         for dir in dirs:
             if not os.path.exists(dir):
                 os.mkdir(dir)
@@ -180,93 +202,200 @@ class CPPGenerator(Generator):
 
             shutil.copyfile(src_path, dst_path)
 
-    def __generate_file(self, file, **kwargs):
+    def __generate_file(self, file, disabled = False, outfile = "", **kwargs):
         template = self.jinja_env.get_template("{}.jinja2".format(file))
 
-        path = os.path.join(self.out_dir, file)
-        self.generated_files.append(file)
+        path = os.path.join(self.out_dir, file if outfile == "" else outfile)
+        self.generated_files.append(GeneratedFile(file if outfile == "" else outfile, disabled))
         self.logger.info("Generating {}".format(path))
 
         with open(path, "w") as file:
             file.write(template.render(kwargs))
 
+        num_lines = 0
+        with open(path, "rbU") as file:
+            num_lines = sum(1 for _ in file)
+
+        return num_lines
+
     def __generate_core_files(self):
         self.__generate_file(
-            "src/core/context.hpp", root_namespace=self.config.get_prefix().replace("_", "::"))
+            "core/context.hpp", 
+            plugin_name=self.config.get_name())
+
+    def __generate_module_files(self):
         self.__generate_file(
-            "src/core/context.cpp", root_namespace=self.config.get_prefix().replace("_", "::"))
-
-    def __generate_sub_files(self):
-        # module change subscriptions
-        self.__generate_file("src/core/sub/change.hpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             change_callbacks=self.change_sub_walker.get_callbacks(), to_camel_case=to_camel_case)
-        self.__generate_file("src/core/sub/change.cpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             change_callbacks=self.change_sub_walker.get_callbacks(), to_camel_case=to_camel_case)
-
-        # operational subscriptions
-        self.__generate_file("src/core/sub/oper.hpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             oper_callbacks=self.oper_sub_walker.get_callbacks(), to_camel_case=to_camel_case)
-        self.__generate_file("src/core/sub/oper.cpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             oper_callbacks=self.oper_sub_walker.get_callbacks(), to_camel_case=to_camel_case)
-
-        # rpc/action subscriptions
-        self.__generate_file("src/core/sub/rpc.hpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             rpc_callbacks=self.rpc_sub_walker.get_callbacks(), to_camel_case=to_camel_case)
-        self.__generate_file("src/core/sub/rpc.cpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             rpc_callbacks=self.rpc_sub_walker.get_callbacks(), to_camel_case=to_camel_case)
-
-    def __generate_yang_files(self):
-        # yang tree API
-        self.__generate_file("src/core/yang/tree.hpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             yang_tree_functions=self.yang_tree_walker.get_functions(), to_camel_case=to_camel_case, LyNode=LyNode, to_c_variable=to_c_variable)
-        self.__generate_file("src/core/yang/tree.cpp", root_namespace=self.config.get_prefix().replace("_", "::"),
-                             yang_tree_functions=self.yang_tree_walker.get_functions(), to_camel_case=to_camel_case, LyNode=LyNode, to_c_variable=to_c_variable)
-
-        # yang paths variables
+            "core/module.hpp")
+        self.__generate_file(
+            "core/module.cpp",
+            modules=self.modules,
+            to_c_variable=to_c_variable,
+            to_camel_case=to_camel_case)
 
     def __generate_plugin_files(self):
         self.__generate_file(
-            "src/plugin.hpp", root_namespace=self.config.get_prefix().replace("_", "::"))
+            "plugin.hpp")
         self.__generate_file(
-            "src/plugin.cpp", root_namespace=self.config.get_prefix().replace("_", "::"))
+            "plugin.cpp", 
+            modules=self.modules,
+            to_c_variable=to_c_variable,
+            to_camel_case=to_camel_case)
+        
+    def __generate_api_files(self):
+        self.logger.info("Generating API files:")
 
+        self.__generate_file(
+            "core/api/base.hpp")
+
+        self.__generate_file(
+            "core/api/logging.hpp")
+
+        counters = {}
+        total_class_count = 0
+        total_loc_count = 0
+        for module in self.modules:
+            self.logger.info("Generating API files for module {}:".format(module.get_name()))
+
+            user_types = self.config.get_yang_configuration().get_types_configuration().get_types_map()
+            static_types = module.class_api_walker.get_types()
+
+            self.__generate_file(
+                "core/api/types.hpp", False, "core/api/" + module.name + "/types.hpp",
+                namespace=to_camel_case(to_c_variable(module.get_prefix()), True) + "Types",
+                enums=module.types_walker.get_enums(),
+                bits=module.types_walker.get_bits(),
+                unions=module.types_walker.get_unions(),
+                str=str,
+                user_types=user_types, 
+                static_types=static_types, 
+                to_c_variable=to_c_variable, 
+                to_camel_case=to_camel_case)
+
+            for idx,file in enumerate(module.class_api_walker.get_api_filenames()):
+                ctx = module.class_api_walker.get_file_ctx(file)
+                node=ctx.node
+                node_type_name = None
+                node_types = []
+                if node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST]:
+                    node_type_name = module.types_walker.get_type_name(node)
+                    enum = module.types_walker.get_enum(node_type_name)
+                    node_types += [enum.name] if enum is not None else []
+                    bit = module.types_walker.get_bit(node_type_name)
+                    node_types += [bit.name] if bit is not None else []
+                    union = module.types_walker.get_union(node_type_name)
+                    node_types += [union.name] if union is not None else []
+                
+                # In case the node itself or any of its children is a list then get the types of their keys since they're required e.g. for the constructor.
+                known_keys = []
+                check_nodes = [node] + (list(node.children()) if not node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST] else [])
+                for entry in check_nodes:
+                    if entry.nodetype() == LyNode.LIST:
+                        for key in entry.keys():
+                            # Since that's a list both enum and union are still None
+                            key_name = module.types_walker.get_type_name(key)
+                            enum_key = module.types_walker.get_enum(key_name)
+                            if enum_key:
+                                known_keys.append(enum_key)
+                            bit_key = module.types_walker.get_bit(key_name)
+                            if bit_key:
+                                known_keys.append(bit_key)
+                            union_key = module.types_walker.get_union(key_name)
+                            if union_key:
+                                known_keys.append(union_key)
+
+                # disable cmake build if module.get_disable() except for the Yang root nodes
+                disable = module.get_disable() if idx != 0 else False
+
+                ext = os.path.splitext(file)[1]
+                loc_count = self.__generate_file(
+                    "core/api/class{}".format(ext if not file.endswith("-ctx.hpp") else "-ctx.hpp"), disable, file[len(self.out_dir):][1:],
+                    module=module,
+                    prefix=ctx.prefix, 
+                    parent_prefix=ctx.parent_prefix,
+                    node=node, 
+                    LyNode=LyNode,
+                    user_types=user_types, 
+                    static_types=static_types, 
+                    node_types=node_types, 
+                    comment="// " if module.get_disable() else "",
+                    node_types_namespace=to_camel_case(to_c_variable(module.get_prefix()), True) + "Types",
+                    known_keys=known_keys,
+                    node_type_name=node_type_name,
+                    children_skip_prefix=module.get_skip_prefix_mode() == "all" or (module.get_skip_prefix_mode() == "root" and not ctx.parent_prefix),
+                    to_c_variable=to_c_variable, 
+                    to_camel_case=to_camel_case,
+                    format_descr=format_descr)
+            
+                if ext == ".cpp":
+                    node_type = str(YangNodeType(node.nodetype()))
+                    if not node_type in counters:
+                        item = {"state": 0, "config": 0}
+                        counters[node_type] = item
+
+                    state_type = "state" if node.config_false() else "config"
+                    counters[node_type][state_type] = counters[node_type][state_type] + 1
+                    total_class_count += 1
+                    total_loc_count += loc_count
+
+        self.logger.info("core/api Generation Summary:")
+        self.logger.info("------------------------------")
+        self.logger.info('| sum: {:>4} | {:>6} | {:>5} |'.format(total_class_count, "config", "state"))
+        self.logger.info("|-----------|--------|-------|")
+        for row in counters.items():
+            self.logger.info('| {:<9} | {:>6} | {:>5} |'.format(row[0], row[1]["config"], row[1]["state"]))
+        self.logger.info("|----------------------------|")
+        self.logger.info("| Generated LOC (cpp): {:>5} |".format(total_loc_count))
+        self.logger.info("------------------------------")
+
+        # generated_files = ""
+        # for key, value in counters.items():
+        #     generated_files += "  {}: state={}, config={}".format(key, value["state"], value["config"])
+        
+        # self.logger.info("API Generation Summary:\n{}".format(generated_files))
+
+            
     def __generate_cmake_files(self):
         # CMakeLists.txt
-        print(self.generated_files)
-        self.__generate_file("CMakeLists.txt", project_name="{}-plugin".format(self.config.get_yang_configuration().get_modules_configuration().get_main_module()),
-                             sources=[
-                                 f for f in self.generated_files if f[-3:] == "cpp"],
-                             headers=[
-                                 f for f in self.generated_files if f[-3:] == "cpp"],
-                             source_dir="src",
-                             to_camel_case=to_camel_case
-                             )
-        pass
+        # print(self.generated_files)
+        self.__generate_file(
+            "CMakeLists.txt", 
+            module_name=self.config.get_name(),
+            files=self.generated_files,
+            src_folder="")
 
     def generate_files(self):
         self.__generate_core_files()
-        self.__generate_sub_files()
-        self.__generate_yang_files()
+        self.__generate_module_files()
         self.__generate_plugin_files()
+        self.__generate_api_files()
         self.__generate_cmake_files()
+        
+        self.__generate_file(
+            "main.cpp", 
+            plugin_name=self.config.get_name())
 
     def apply_formatting(self):
         self.logger.info("Applying .clang-format style")
 
         if shutil.which("clang-format") is not None:
-            self.logger.info("clang-format found!")
+            self.logger.info("Running clang-format...")
             # copy the used clang-format file into the source directory and apply it to all generated files
             src_path = "templates/common/.clang-format"
             dst_path = os.path.join(self.out_dir, ".clang-format")
 
             shutil.copyfile(src_path, dst_path)
 
-            for gen in self.generated_files:
+            for entry in self.generated_files:
                 # run clang-format command
+                gen = entry.get_file()
                 if gen[-3:] == "cpp" or gen[-3:] == "hpp":
-                    self.logger.info("Running clang-format on {}".format(gen))
+                    # self.logger.info("Running clang-format on {}".format(gen))
                     params = ["clang-format", "-style=file",
                               os.path.join(self.out_dir, gen)]
                     output = subprocess.check_output(params)
                     with open(os.path.join(self.out_dir, gen), "wb") as out_file:
                         out_file.write(output)
+            
+            self.logger.info("Finished!")
+
+            pathlib.Path(dst_path).unlink()

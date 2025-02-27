@@ -1,0 +1,668 @@
+{% if node.config_false() %}
+#include <functional>
+
+{% endif %}
+#include "{{ node.name() }}.hpp"
+
+{% import 'macros.jinja2' as macro %}
+
+{% set class = to_camel_case(to_c_variable(prefix), True) %}
+{% if children_skip_prefix %}
+    {% set children_prefix = "" %}
+{% else %}
+    {% set children_prefix = to_camel_case(to_c_variable(prefix), True) %}
+{% endif %}
+
+{% if node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST] %}
+    {% set type = macro.get_node_type(node, user_types, static_types, node_types, node_types_namespace, node_type_name, to_c_variable, to_camel_case) %}
+{% endif %}
+
+namespace core::api {
+
+{% import 'macros.jinja2' as macro %}
+
+{%- macro get_base_class(node) -%}
+    {%- if node.nodetype() == LyNode.CONTAINER -%}
+YangContainer{% if node.config_false() %}State{% else %}Config{% endif -%}
+    {%- elif node.nodetype() == LyNode.LIST -%}
+YangList{% if node.config_false() %}State{% else %}Config{% endif -%}
+    {%- elif node.nodetype() == LyNode.LEAF -%}
+        {%- if node.is_key() -%}
+YangKeyLeaf{% if node.config_false() %}State{% else %}Config{% endif %}<{{ type }}>
+        {%- else -%}
+YangLeaf{% if node.config_false() %}State{% else %}Config{% endif %}<{{ type }}>
+        {%- endif -%}
+    {%- elif node.nodetype() == LyNode.LEAFLIST -%}
+YangLeafList{% if node.config_false() %}State{% else %}Config{% endif %}<{{ type }}>
+    {%- elif node.nodetype() == LyNode.RPC -%}
+YangRpc
+    {%- endif -%}
+{%- endmacro -%}
+
+{% set ctx = class + "Ctx" %}
+{% if node.get_parent() %}
+    {% set parent_ctx = to_camel_case(to_c_variable(parent_prefix), True) + "Ctx" %}
+{% else %}
+    {% set parent_ctx = "::core::PluginContext" %}
+{% endif %}
+
+/**
+ * @brief Constructor for class handling Yang path {{ node.data_path() }}.
+{% if node.config_false() and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+ *
+ * @note
+ * The Yang node managed by this class is state data. By default state data is using the push mechanism,
+ * where the @ref Load function updates the internal cache and that data is pushed once into the operational
+ * datastore. It can be updated using @ref UpdateDatastore, however, this does not commit the data to
+ * the operational datastore yet, which must be done manually at some central place.
+ * In case you want to change this Yang node to use the pull mechanism, so that it will be refreshed each
+ * time this leaf is read by some sysrepo client, simply change the parameter of its base class instantiation
+ * @ref {{ get_base_class(node) }} from @ref DataType::kStatePush to @ref DataType::kStatePull.
+{% endif %}
+{% if macro.get_list_len(node.if_features()) != '0' %}
+ * 
+ * @p note This node is only valid if all of the following features are enabled: [{% for feature in node.if_features() %}{% if loop.index0 > 0 %}, {% endif %}{{ feature.tree().feature().name() }}{% endfor %}]
+{% endif %}
+ */
+{{ class }}::{{ class }}({% if node.get_parent() %}const {% endif %} {{ parent_ctx }}& ctx{% if node.get_parent() %}, const std::string& parent_path{% endif %}
+    {% if node.nodetype() == LyNode.LIST %}
+        {% for key in node.keys() -%}
+            , const {{ macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) -}}& {{ to_c_variable(node.name() + "-" + key.name()) }}
+        {% endfor -%}
+    {% elif node.nodetype() == LyNode.LEAF and node.is_key() -%}
+        , const {{ type }}& {{ to_c_variable(node.name()) }}
+    {% endif -%}
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+        , {% if comment != "" and node.nodetype() == LyNode.CONTAINER and node.config_false() %}[[maybe_unused]] {% endif %}{% if node.nodetype() in [LyNode.CONTAINER] %}[[maybe_unused]] {% endif %}SystemChange system_change
+    {% endif -%}
+	)
+    : {{ get_base_class(node) }}("{{ node.schema_path() }}",
+    {%- if node.get_parent() %}
+        {# Set the initializer for m_node_path: In a list node add the keys with their values! #}
+        parent_path + "{% if not node.parent() %}{# This is a top level node but not our root node #}:{% else %}/{% endif %}{% if node.module().name() != node.get_parent().module().name() %}{{ node.module().name() }}:{% endif %}{{ node.name() }}{# Just there to fix syntax highlighting: " #}
+        {%- if node.nodetype() == LyNode.LIST -%}
+            {%- for key in node.keys() -%}
+                {# Strings can just be concatenated. Native types can be converted using static_cast and enums must be casted to their native type first. #}
+                {% set key_type = macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) -%}
+                {% if key.type().basename() in ["enumeration", "bits"] %}
+                    {% set value = "static_cast<std::string>( magic_enum::enum_name(" + to_c_variable(node.name() + "-" + key.name()) +  ") )" %}
+                {% elif key_type != "std::string" %}
+                    {% set value = "std::to_string(" + to_c_variable(node.name() + "-" + key.name()) + ")" %}
+                {% else %}
+                    {% set value = to_c_variable(node.name() + "-" + key.name()) %}
+                {% endif -%}
+                [{{ key.name() + "=\'\"" }} + {{ value }} + {{ "\"\'" }}]
+            {%- endfor -%}
+        {%- endif -%}
+        "{# Just there to fix syntax highlighting: " #}
+    {% else -%}
+        "{{ node.data_path() }}"
+    {% endif -%}
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and node.config_false() and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+        , DataType::kStatePush
+    {% endif -%}
+    , {% if node.get_parent() %}ctx.plugin_ctx{% else %}ctx{% endif %}
+    {% if node.nodetype() == LyNode.LIST and not node.config_false() %}, system_change{% endif %}
+    {% if node.nodetype() == LyNode.LEAF and node.is_key() %}, {{ to_c_variable(node.name()) }}{% endif %}
+    {% if not node.config_false() %}
+        {% if node.nodetype() == LyNode.LEAF and node.default() != None %}
+            {% if node.type().basename() in ["enumeration", "bits"] %}
+                , {{ type }}::k{{ to_camel_case(to_c_variable(node.default()), True) }}
+            {% elif node.type().basename() == "boolean" %}
+                , {{ node.default()|lower }}
+            {% elif type == "std::string" %}
+                , "{{ node.default() }}"
+            {% else %}
+                , {{ node.default() }}
+            {% endif %}
+        {% elif node.nodetype() == LyNode.LEAFLIST and macro.get_list_len(node.defaults()) != "0" %}
+            , std::make_optional<std::list<{{ type }}>>({ {% for default in node.defaults() %}{% if loop.index0 > 0 %}, {% endif %}{% if type == "std::string" %}"{% endif %}{{ default }}{% if type == "std::string" %}"{% endif %}{% endfor %} })
+        {% endif %}
+    {% endif %}
+    )
+    , m_ctx(ctx)
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+        {% for child in node.children() %}
+            {% if not child.deprecated() %}
+                {% if child.nodetype() == LyNode.LIST %}
+                    {% if macro.get_list_len(child.if_features()) != '0' %}
+                        {% set len = macro.get_list_len(child.keys()) %}
+                        {% if len == "1" %}
+                            {% set key_type = macro.get_key_type(child.keys() | first, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) %}
+                            {{ comment }}, m_{{ to_c_variable(child.name()) }}(!ctx.plugin_ctx.FeaturesEnabled("{{ child.module().name() }}", { {% for feature in child.if_features() %}{% if loop.index0 > 0 %}, {% endif %}"{{ feature.tree().feature().name() }}"{% endfor %} }) ? std::nullopt : std::make_optional<std::map<{{ key_type }}, List{% if child.config_false() %}State{% else %}Config{% endif %}Node<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>{% if key_type == "std::string"%}, std::less<>{% endif %}>>({}))
+                        {% else %}
+                            {{ comment }}, m_{{ to_c_variable(child.name()) }}(!ctx.plugin_ctx.FeaturesEnabled("{{ child.module().name() }}", { {% for feature in child.if_features() %}{% if loop.index0 > 0 %}, {% endif %}"{{ feature.tree().feature().name() }}"{% endfor %} }) ? std::nullopt : std::make_optional<std::map<std::tuple<{% for key in child.keys() %}{% if loop.index0 > 0 %}, {% endif %}{{ macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) }} {% endfor %}>, List{% if child.config_false() %}State{% else %}Config{% endif %}Node<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>>>({}))
+                        {% endif %}
+                    {% endif %}
+                {% else %}
+                    {% if child.nodetype() == LyNode.LEAF and child.is_key() %}
+                        , m_{{ to_c_variable(child.name()) }}(m_ctx, GetNodePath(), {{ to_c_variable(node.name() + "-" + child.name()) }})
+                    {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] %}
+                        {{ comment }}, m_{{ to_c_variable(child.name()) }}({% if macro.get_list_len(child.if_features()) != '0' %}!ctx.plugin_ctx.FeaturesEnabled("{{ child.module().name() }}", { {% for feature in child.if_features() %}{% if loop.index0 > 0 %}, {% endif %}"{{ feature.tree().feature().name() }}"{% endfor %} }) ? std::nullopt : std::make_optional<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>({% endif %}m_ctx, GetNodePath(), system_change{% if macro.get_list_len(child.if_features()) != '0' %}){% endif %})
+                    {% elif child.nodetype() == LyNode.RPC %}
+                        {{ comment }}, m_{{ to_c_variable(child.name()) }}({% if macro.get_list_len(child.if_features()) != '0' %}!ctx.plugin_ctx.FeaturesEnabled("{{ child.module().name() }}", { {% for feature in child.if_features() %}{% if loop.index0 > 0 %}, {% endif %}"{{ feature.tree().feature().name() }}"{% endfor %} }) ? std::nullopt : std::make_optional<{{ children_prefix }}{{ to_camel_case(to_c_variable(child.name()), True) }}>({% endif %}m_ctx, GetNodePath(){% if macro.get_list_len(child.if_features()) != '0' %}){% endif %})
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+{
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+        {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+            {% set ns = namespace(first_item=True) %}
+            {% for child in node.children() %}
+                {% if not child.deprecated() and child.nodetype() == LyNode.LIST %}
+                    {% if ns.first_item %}
+                    if (system_change == SystemChange::kTransparent) {
+                    {% endif %}
+                    {% set dereference = "" if macro.get_list_len(child.if_features()) == '0' else "*" %}
+                    {% set indent = "" if macro.get_list_len(child.if_features()) == '0' else "    " %}
+                    {% if macro.get_list_len(child.if_features()) != '0' %}
+                    
+                    {{ comment }}if (m_{{ to_c_variable(child.name()) }}.has_value()) {
+                    {% endif %}
+                    // {{ indent }}TODO: [generator] Load the system and populate the list {{ dereference }}m_{{ to_c_variable(child.name()) }} providing m_ctx as context (perhaps update its contents specificly for each entry).
+                    {% if macro.get_list_len(child.if_features()) != '0' %}
+                    {{ comment }}}
+                    {% endif %}
+                    {% set ns.first_item = False %}
+
+                {% endif %}
+            {% endfor %}
+            {% if not ns.first_item %}
+            }
+            {% endif %}
+        {% else %}
+            if (system_change == SystemChange::kTransparent) {
+                {% if not node.config_false() %}
+                    {# Config nodes may have more than one supported data types, load all of them (config and oper-push are mandatory, but also load oper-pull to detect bugs already during construction). #}
+                    for ( const auto type : *DataTypeContainer( GetDataType() ) )
+                    {
+                        Load( type );
+                    }
+                {% else %}
+                    Load( DataType::kState );
+                {% endif %}
+            }
+        {% endif %}
+    {% endif %}
+}
+
+/**
+ * @brief Destructor for class handling Yang path {{ node.data_path() }}.
+ */
+{{ class }}::~{{ class }}() = default;
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not node.config_false() and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+/**
+ * @brief Validate an incoming change request for class handling Yang path {{ node.data_path() }}.
+ *
+ * Called when applying the startup datastore or running datastore changes to the system.
+ *
+ * @throw A @p std::system_error with error category @ref CSysrepoErrCategory in case of validation error.
+ */
+void {{ class }}::Validate() const noexcept(false)
+{
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+
+        {% for child in node.children() %}
+            {% if not child.deprecated() and not child.config_false() and child.nodetype() in [LyNode.LIST, LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                {% set dereference = ("" if child.nodetype() == LyNode.LIST else ".") if macro.get_list_len(child.if_features()) == '0' else ("*" if child.nodetype() == LyNode.LIST else "->") %}
+                {% set indent = "" if macro.get_list_len(child.if_features()) == '0' else "    " %}
+                {% if macro.get_list_len(child.if_features()) != '0' %}
+
+                {{ comment }}if (m_{{ to_c_variable(child.name()) }}.has_value()) {
+                {% endif %}
+                    {% if child.nodetype() == LyNode.LIST %}
+                        {% if macro.get_list_len(child.if_features()) == '0' %}
+                        
+                        {% endif %}
+                        {{ comment }}{{ indent }}for (auto& {{ to_c_variable(child.name()) }}: std::views::values({{ dereference }}m_{{ to_c_variable(child.name()) }})) {
+                        {{ comment }}{{ indent }}    {{ to_c_variable(child.name()) }}.Validate();
+                        {{ comment }}{{ indent }}}
+                        {% if macro.get_list_len(child.if_features()) == '0' %}
+                        
+                        {% endif %}
+                    {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                        {{ comment }}{{ indent }}m_{{ to_c_variable(child.name()) }}{{ dereference }}Validate();
+                    {% endif %}
+                {% if macro.get_list_len(child.if_features()) != '0' %}
+                {{ comment }}}
+                
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+
+    {% else %}
+        if (GetCacheState() == CacheState::kInvalid) {
+            // TODO: [generator] Reject requested configuration change in current cache with sysrepo::ErrorCode::ValidationFailed in case it violates some constraint that's not handled by the Yang model.
+            //       Example: `throw std::system_error( std::error_code( static_cast<int>( sysrepo::ErrorCode::ValidationFailed ), CSysrepoErrCategory() ), "Validation failed because..." );`
+            /* Default: All incoming changes are accepted. */
+        }
+    {% endif %}
+}
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not (node.nodetype() == LyNode.LEAF and node.is_key()) %}
+/**
+ * @brief Load current system settings into local cache for class handling Yang path {{ node.data_path() }}.
+ *
+ * Called to update the internal cache with the current system settings.
+ *
+ * @param data_type     Data type that shall be loaded from the system.
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+ * @param request_path  The requested schema path.
+{% endif %}
+ */
+void {{ class }}::Load({% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}[[maybe_unused]] {% endif %}DataType data_type{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}, std::string_view request_path{% endif %})
+{
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+    /*
+     * Forward to children if:
+     * 1. All children are requested: Our schema path starts with the requested schema path
+     * 2. Only one child is requested: The requested schema path starts with the child's schema path
+     */
+    const std::string schema_path{GetSchemaPath()};
+    [[maybe_unused]] const auto all_requested{schema_path.starts_with( request_path )};
+
+        {% for child in node.children() %}
+            {% if not child.deprecated() and child.nodetype() in [LyNode.LIST, LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                {% set dereference = ("" if child.nodetype() == LyNode.LIST else ".") if macro.get_list_len(child.if_features()) == '0' else ("*" if child.nodetype() == LyNode.LIST else "->") %}
+                {% set indent = "    " %}
+                {% if child.nodetype() == LyNode.LIST %}
+
+                    {{ comment }}if ({% if macro.get_list_len(child.if_features()) != '0' %}m_{{ to_c_variable(child.name()) }}.has_value() && ({% endif %}all_requested || request_path.starts_with(schema_path + "/{{ child.name() }}"){% if macro.get_list_len(child.if_features()) != '0' %}){% endif %}) {
+                        {{ comment }}{{ indent }}for (auto& {{ to_c_variable(child.name()) }}: std::views::values({{ dereference }}m_{{ to_c_variable(child.name()) }})) {
+                        {{ comment }}{{ indent }}    {{ to_c_variable(child.name()) }}.Load(data_type, request_path);
+                        {{ comment }}{{ indent }}}
+                    {{ comment }}}
+
+                {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                    
+                    {{ comment }}if ({% if macro.get_list_len(child.if_features()) != '0' %}m_{{ to_c_variable(child.name()) }}.has_value() && ({% endif %}all_requested || request_path.starts_with(m_{{ to_c_variable(child.name()) }}{{ dereference }}GetSchemaPath()){% if macro.get_list_len(child.if_features()) != '0' %}){% endif %}) {
+                    {{ comment }}    m_{{ to_c_variable(child.name()) }}{{ dereference }}Load(data_type{% if child.nodetype() == LyNode.CONTAINER %}, request_path{% endif %});
+                    {{ comment }}}
+
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+    {% else %}
+        if (DataType::kNone != (GetDataType() & data_type)) {
+            {% if node.nodetype() == LyNode.LEAF %}
+                // TODO: [generator] Load system and fill cache using SetValue.
+                // SetValue(value{% if not node.config_false() %}, CacheState::kValid{% endif %});
+            {% else %}
+                // TODO: [generator] Load system and fill cache using SetValues/AddValue.
+                // AddValue(value{% if not node.config_false() %}, CacheState::kValid{% endif %});
+            {% endif %}
+
+        }
+    {% endif %}
+}
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST, LyNode.LEAF, LyNode.LEAFLIST] and not node.config_false() and not (node.nodetype() == LyNode.LEAF and node.is_key() ) %}
+/**
+ * @brief Apply current cache into system settings for class handling Yang path {{ node.data_path() }}.
+ *
+ * Called when applying the startup datastore or running datastore changes to the system.
+ */
+void {{ class }}::Store()
+{
+    {% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+        {% if node.nodetype() == LyNode.LIST %}
+            if (GetSystemChange() == SystemChange::kCreated) {
+                // TODO: [generator] Create this list entry in the system if applicable.
+            }
+        {% endif %}
+
+        {% for child in node.children() %}
+            {% if not child.deprecated() and not child.config_false() and child.nodetype() in [LyNode.LIST, LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                {% set dereference = ("" if child.nodetype() == LyNode.LIST else ".") if macro.get_list_len(child.if_features()) == '0' else ("*" if child.nodetype() == LyNode.LIST else "->") %}
+                {% set indent = "" if macro.get_list_len(child.if_features()) == '0' else "    " %}
+                {% if macro.get_list_len(child.if_features()) != '0' %}
+                
+                {{ comment }}if (m_{{ to_c_variable(child.name()) }}.has_value()) {
+                {% endif %}
+                {% if child.nodetype() == LyNode.LIST %}
+                    {% if macro.get_list_len(child.if_features()) == '0' %}
+                    
+                    {% endif %}
+                    {{ comment }}{{ indent }}for (auto& {{ to_c_variable(child.name()) }}: std::views::values({{ dereference }}m_{{ to_c_variable(child.name()) }})) {
+                    {{ comment }}{{ indent }}    {{ to_c_variable(child.name()) }}.Store();
+                    {{ comment }}{{ indent }}}
+                    {% if macro.get_list_len(child.if_features()) == '0' %}
+                    
+                    {% endif %}
+                {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                    {{ comment }}{{ indent }}m_{{ to_c_variable(child.name()) }}{{ dereference }}Store();
+                {% endif %}
+                {% if macro.get_list_len(child.if_features()) != '0' %}
+                {{ comment }}}
+                
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+
+        {% if node.nodetype() == LyNode.LIST %}
+            if (GetSystemChange() == SystemChange::kDeleted) {
+                // TODO: [generator] Remove this list entry from the system if applicable.
+            }
+        {% endif %}
+    {% elif not node.config_false() and node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST] %}
+        if (GetCacheState() == CacheState::kInvalid) {
+            // TODO: [generator] Apply cache to system if applicable.
+
+            /* Update operational push-data if existing. */
+            if ( DataType::kNone != ( GetDataType() & DataType::kStatePush ) )
+            {
+                UpdateDatastore( GetPluginCtx().getSession(), sysrepo::Datastore::Operational );
+            }
+
+            /* Tell the base class that the current cache has been applied while leaving the cache invalid for being able to revert later in case the change callback will be aborted. */
+            CurrentCacheValueWasApplied();
+        }
+    {% endif %}
+}
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+/**
+ * @brief Get current cache as a Yang data node provided in @p output for class handling Yang path {{ node.data_path() }}.
+ *
+ * Called when generating the operational or running datastore.
+ *
+ * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+ * @param request_path  The requested schema path.
+ * @param output        The data tree to insert the node into. In case the data is not present then its node is removed from @p output in case it's existing therein.
+ */
+{% set use_unused = node.nodetype() == LyNode.CONTAINER and (comment != "" or not node.get_parent() ) %}
+void {{ class }}::InsertNode({% if use_unused %}[[maybe_unused]] {% endif %}DataType data_type, std::string_view request_path, {% if use_unused %}[[maybe_unused]] {% endif %}std::optional<libyang::DataNode>& output) const
+{
+    /*
+     * Forward to children if:
+     * 1. All children are requested: Our schema path starts with the requested schema path
+     * 2. Only one child is requested: The requested schema path starts with the child's schema path
+     */
+    const std::string schema_path{GetSchemaPath()};
+    [[maybe_unused]] const auto all_requested{schema_path.starts_with( request_path )};
+
+    {% for child in node.children() %}
+        {% if not child.deprecated() and child.nodetype() in [LyNode.LIST, LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] %}
+            {% set dereference = ("" if child.nodetype() == LyNode.LIST else ".") if macro.get_list_len(child.if_features()) == '0' else ("*" if child.nodetype() == LyNode.LIST else "->") %}
+            {% set indent = "    " %}
+            {% if child.nodetype() == LyNode.LIST %}
+
+                {{ comment }}if ({% if macro.get_list_len(child.if_features()) != '0' %}m_{{ to_c_variable(child.name()) }}.has_value() && ({% endif %}all_requested || request_path.starts_with(schema_path + "/{{ child.name() }}"){% if macro.get_list_len(child.if_features()) != '0' %}){% endif %}) {
+                    {{ comment }}{{ indent }}for (const auto& {{ to_c_variable(child.name()) }}: std::views::values({{ dereference }}m_{{ to_c_variable(child.name()) }})) {
+                    {{ comment }}{{ indent }}    {{ to_c_variable(child.name()) }}.InsertNode(data_type, request_path, output);
+                    {{ comment }}{{ indent }}}
+                {{ comment }}}
+
+            {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] %}
+                
+                {% set comment_out = "" if (child.nodetype() == LyNode.LEAF and child.is_key()) else comment %}
+                {{ comment_out }}if ({% if macro.get_list_len(child.if_features()) != '0' %}m_{{ to_c_variable(child.name()) }}.has_value() && ({% endif %}all_requested || request_path.starts_with(m_{{ to_c_variable(child.name()) }}{{ dereference }}GetSchemaPath()){% if macro.get_list_len(child.if_features()) != '0' %}){% endif %}) {
+                {{ comment_out }}    m_{{ to_c_variable(child.name()) }}{{ dereference }}InsertNode(data_type{% if child.nodetype() == LyNode.CONTAINER %}, request_path{% endif %}, output);
+                {{ comment_out }}}
+
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+}
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] %}
+/**
+ * @brief Set current cache from a changed Yang data node for class handling Yang path {{ node.data_path() }}.
+ *
+ * Called either by internal changes to the operational (push-data) datastore or by sysrepo change callbacks of the running datastore.
+ *
+ * @param change        Sysrepo change information.
+{% if not node.config_false() %}
+ * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+{% endif %}
+ */
+void {{ class }}::SetNode({% if comment != "" and node.nodetype() == LyNode.CONTAINER %}[[maybe_unused]] {% endif %}const sysrepo::Change& change{% if not node.config_false() %}, {% if not node.nodetype() in [LyNode.LEAF, LyNode.LEAFLIST] %}[[maybe_unused]] {% endif %}CacheState cache_state{% endif %})
+{
+    {% if not node.config_false() and node.nodetype() == LyNode.LIST %}
+    if (const auto& change_path{change.node.path()}; 0 == change_path.compare(GetNodePath())) {
+        if (change.operation == sysrepo::ChangeOperation::Deleted) {
+            SetSystemChange(SystemChange::kDeleted);
+        }
+    }
+    else if (change_path.starts_with(GetNodePath())) {
+    {% else %}
+    if (const auto& change_path{change.node.path()}; change_path.starts_with(GetNodePath())) {
+    {% endif %}
+        {% set ns = namespace(first_item=True) %}
+        {% for child in node.children() %}
+            {% if not child.deprecated() and child.nodetype() in [LyNode.LIST, LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] %}
+                {% set dereference = "." if macro.get_list_len(child.if_features()) == '0' else "->" %}
+                {% set indent = "    " %}
+                {% if child.nodetype() == LyNode.LIST %}
+                    {% if not ns.first_item %}{{ comment }}else if {% else %}{{ comment }}if {% endif %}({% if macro.get_list_len(child.if_features()) != '0' %}m_{{ to_c_variable(child.name()) }}.has_value() && {% endif %}change_path.starts_with(GetNodePath() + "/{{ child.name() }}")) {
+                        {{ comment }}{{ indent }}using enum sysrepo::ChangeOperation;
+                        {% set len = macro.get_list_len(child.keys()) %}
+                        {% if len == "1" %}
+                            {% set key = child.keys() | first %}
+                            {% set key_type = macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) %}
+                            {% set key_name = key.name() %}
+                            {% if key_type != "std::string" %}
+                                {{ comment }}{{ indent }}const {{ key_type }} &key{ static_cast<{{ key_type }}>( std::stoll( srpc::extractListKeyFromXPath( "{{ child.name() }}", "{{ key_name }}", change_path ) ) ) };
+                            {% else %}
+                                {{ comment }}{{ indent }}const {{ key_type }} &key{ srpc::extractListKeyFromXPath( "{{ child.name() }}", "{{ key_name }}", change_path ) };
+                            {% endif %}
+                        {% else %}
+                            {{ comment }}{{ indent }}auto keys_str{ srpc::extractListKeysFromXpath( "{{ child.name() }}", change_path ) };
+                            {{ comment }}{{ indent }}std::tuple<{% for key in child.keys() %}{% if loop.index0 > 0 %}, {% endif %}{{ macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) }} {% endfor %}> key{};
+                            {{ comment }}{{ indent }}for ( const auto &[key_name, key_value] : keys_str ) {
+                                {%- for key in child.keys() -%}
+                                {% if loop.index0 > 0 %}else {% endif %}if ( key_name == "{{ key.name() }}" ) {
+                                    {%- set key_type = macro.get_key_type(key, user_types, static_types, known_keys, node_types_namespace, to_c_variable, to_camel_case) -%}
+                                    {%- if key_type != "std::string" -%}
+                                        std::get<{{ loop.index0 }}>( key ) = static_cast<{{ key_type }}>( std::stoll( key_value ) );
+                                    {%- else -%}
+                                        std::get<{{ loop.index0 }}>( key ) = key_value;
+                                    {%- endif -%}
+                                }
+                                {%- endfor -%}
+                            }
+
+                        {% endif %}
+                        {{ comment }}
+                        {{ comment }}{{ indent }}/* Create the list entry if not yet existing unless it's a delete request. */
+                        {{ comment }}{{ indent }}if ( change.operation != Deleted && !m_{{ to_c_variable(child.name()) }}{{ dereference }}contains( key ) ) {
+                            {{ comment }}{{ indent }}{{ indent }}// TODO: Update m_ctx for that child instance?
+                            {{ comment }}{{ indent }}{{ indent }}m_{{ to_c_variable(child.name()) }}{{ dereference }}try_emplace( key, m_ctx, GetNodePath(),
+                                {%- if len == "1" -%}
+                                    key
+                                {%- else -%}
+                                    {%- for key in child.keys() -%}
+                                        {%- if loop.index0 > 0 -%}, {%- endif -%}
+                                        std::get<{{ loop.index0 }}>(key)
+                                    {%- endfor -%}
+                                {%- endif -%}
+                                {%- if not (node.nodetype() == LyNode.LEAF and node.is_key()) -%}
+                                    , SystemChange::kCreated
+                                {%- endif -%});
+                        {{ comment }}{{ indent }}}
+                        {{ comment }}
+                        {{ comment }}{{ indent }}if (auto it{m_{{ to_c_variable(child.name()) }}{{ dereference }}find( key )}; it != m_{{ to_c_variable(child.name()) }}{{ dereference }}end()) {
+                        {% if not child.config_false() %}
+                            {{ comment }}{{ indent }}{{ indent }}/* Forward the change. */
+                            {{ comment }}{{ indent }}{{ indent }}it->second.SetNode( change, cache_state );
+                        {% else %}
+
+                            {{ comment }}{{ indent }}/* If the entire state list entry shall be deleted then remove it from the map. */
+                            {{ comment }}{{ indent }}if (change.operation == Deleted && change_path == it->second.GetNodePath()) {
+                            {{ comment }}{{ indent }}    m_{{ to_c_variable(child.name()) }}{{ dereference }}erase(it);
+                            {{ comment }}{{ indent }}}
+                            {{ comment }}{{ indent }}else {
+                            {{ comment }}{{ indent }}    it->second.SetNode( change );
+                            {{ comment }}{{ indent }}}
+                        {% endif %}
+                        {{ comment }}{{ indent }}}
+                    {{ comment }}}
+                    {% set ns.first_item = False %}
+                {% elif child.nodetype() == LyNode.LEAF and not child.is_key() %}
+                    {% if not ns.first_item %}{{ comment }}else if {% else %}{{ comment }}if {% endif %}({% if macro.get_list_len(child.if_features()) != '0' %}m_{{ to_c_variable(child.name()) }}.has_value() && {% endif %}0 == change_path.compare(m_{{ to_c_variable(child.name()) }}{{ dereference }}GetNodePath())) {
+                        {{ comment }}{{ indent }}m_{{ to_c_variable(child.name()) }}{{ dereference }}SetNode(change{% if not child.config_false() %}, cache_state{% endif %});
+                    {{ comment }}}
+                    {% set ns.first_item = False %}
+                {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                    {% if not ns.first_item %}{{ comment }}else if {% else %}{{ comment }}if {% endif %}({% if macro.get_list_len(child.if_features()) != '0' %}m_{{ to_c_variable(child.name()) }}.has_value() && {% endif %}change_path.starts_with(m_{{ to_c_variable(child.name()) }}{{ dereference }}GetNodePath())) {
+                        {{ comment }}{{ indent }}m_{{ to_c_variable(child.name()) }}{{ dereference }}SetNode(change{% if not child.config_false() %}, cache_state{% endif %});
+                    {{ comment }}}
+                    {% set ns.first_item = False %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+    }
+}
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] and not node.config_false() %}
+/**
+ * @brief Restore the current cache from its backup for class handling Yang path {{ node.data_path() }}.
+ *
+ * Called by handling the Abort event in a sysrepo change callback.
+ */
+void {{ class }}::RevertNode()
+{
+    {% if node.nodetype() == LyNode.LIST %}
+        using enum SystemChange;
+
+        /* Delete a created and recreate a deleted list entry. */
+        if (GetSystemChange() == kCreated) {
+            SetSystemChange(kDeleted);
+        }
+        else if (GetSystemChange() == kDeleted) {
+            SetSystemChange(kCreated);
+        }
+    {% endif %}
+
+    {% for child in node.children() %}
+        {% if not child.deprecated() and not child.config_false() and child.nodetype() in [LyNode.LIST, LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+            {% set dereference = ("" if child.nodetype() == LyNode.LIST else ".") if macro.get_list_len(child.if_features()) == '0' else ("*" if child.nodetype() == LyNode.LIST else "->") %}
+            {% set indent = "" if macro.get_list_len(child.if_features()) == '0' else "    " %}
+            {% if macro.get_list_len(child.if_features()) != '0' %}
+            
+            {{ comment }}if (m_{{ to_c_variable(child.name()) }}.has_value()) {
+            {% endif %}
+            {% if child.nodetype() == LyNode.LIST %}
+                {% if macro.get_list_len(child.if_features()) == '0' %}
+                
+                {% endif %}
+                {{ comment }}{{ indent }}for (auto& {{ to_c_variable(child.name()) }}: std::views::values({{ dereference }}m_{{ to_c_variable(child.name()) }})) {
+                {{ comment }}{{ indent }}    {{ to_c_variable(child.name()) }}.RevertNode();
+                {{ comment }}{{ indent }}}
+                {% if macro.get_list_len(child.if_features()) == '0' %}
+                
+                {% endif %}
+            {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                {{ comment }}{{ indent }}m_{{ to_c_variable(child.name()) }}{{ dereference }}RevertNode();
+            {% endif %}
+            {% if macro.get_list_len(child.if_features()) != '0' %}
+            {{ comment }}}
+
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+}
+{% endif %}
+
+{% if node.nodetype() in [LyNode.CONTAINER, LyNode.LIST] and not node.config_false() %}
+/**
+ * @brief Finalize previously applied (and perhaps reverted) changes for class handling Yang path {{ node.data_path() }}.
+ *
+ * Called by handling the Done or Abort event in a sysrepo change callback.
+ */
+void {{ class }}::Finalize()
+{
+    {% if node.nodetype() == LyNode.LIST %}
+        if (GetSystemChange() == SystemChange::kCreated) {
+            /* Validate this created list instance. */
+            SetSystemChange(SystemChange::kTransparent);
+        }
+    {% endif %}
+
+    {% for child in node.children() %}
+        {% if not child.deprecated() and not child.config_false() and child.nodetype() in [LyNode.LIST, LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+            {% set dereference = ("" if child.nodetype() == LyNode.LIST else ".") if macro.get_list_len(child.if_features()) == '0' else ("*" if child.nodetype() == LyNode.LIST else "->") %}
+            {% set indent = "" if macro.get_list_len(child.if_features()) == '0' else "    " %}
+            {% if macro.get_list_len(child.if_features()) != '0' %}
+            
+            {{ comment }}if (m_{{ to_c_variable(child.name()) }}.has_value()) {
+            {% endif %}
+            {% if child.nodetype() == LyNode.LIST %}
+                {% if macro.get_list_len(child.if_features()) == '0' %}
+                
+                {% endif %}
+                {{ comment }}{{ indent }}/* Remove deleted instances from the list m_{{ to_c_variable(child.name()) }}. */
+                {{ comment }}{{ indent }}std::erase_if({{ dereference }}m_{{ to_c_variable(child.name()) }}, [](const auto& entry){
+                {{ comment }}{{ indent }}    const auto& [name, {{ to_c_variable(child.name()) }}] = entry;
+                {{ comment }}{{ indent }}    return {{ to_c_variable(child.name()) }}.GetSystemChange() == SystemChange::kDeleted;
+                {{ comment }}{{ indent }}});
+                {{ comment }}
+                {{ comment }}{{ indent }}for (auto& {{ to_c_variable(child.name()) }}: std::views::values({{ dereference }}m_{{ to_c_variable(child.name()) }})) {
+                {{ comment }}{{ indent }}    {{ to_c_variable(child.name()) }}.Finalize();
+                {{ comment }}{{ indent }}}
+                {% if macro.get_list_len(child.if_features()) == '0' %}
+                
+                {% endif %}
+            {% elif child.nodetype() in [LyNode.CONTAINER, LyNode.LEAF, LyNode.LEAFLIST] and not (child.nodetype() == LyNode.LEAF and child.is_key()) %}
+                {{ comment }}{{ indent }}m_{{ to_c_variable(child.name()) }}{{ dereference }}Finalize();
+            {% endif %}
+            {% if macro.get_list_len(child.if_features()) != '0' %}
+            {{ comment }}}
+            
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+}
+{% endif %}
+
+{% if not node.get_parent() %}
+/**
+ * @brief Collect the list of RPC callbacks of the Yang model {{ node.module().name() }}.
+ *
+ * Called initially to register RPC callbacks.
+ */
+std::list<srpc::RpcCallback> {{ class }}::GetRpcCallbacks()
+{
+    std::list<srpc::RpcCallback> callbacks{};
+
+    {% for child in node.children() %}
+        {% if not child.deprecated() and child.nodetype() == LyNode.RPC %}
+            {% set dereference = ("" if child.nodetype() == LyNode.LIST else ".") if macro.get_list_len(child.if_features()) == '0' else ("*" if child.nodetype() == LyNode.LIST else "->") %}
+            {% if macro.get_list_len(child.if_features()) != '0' %}
+            
+            {{ comment }}if (m_{{ to_c_variable(child.name()) }}.has_value()) {
+            {% endif %}
+            {{ comment }}callbacks.emplace_back(m_{{ to_c_variable(child.name()) }}{{ dereference }}GetRpcCallback());
+            {% if macro.get_list_len(child.if_features()) != '0' %}
+            {{ comment }}}
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+
+    return callbacks;
+}
+{% endif %}
+
+{% if node.nodetype() == LyNode.RPC %}
+/**
+ * @brief Sysrepo RPC callback for class handling Yang path {{ node.data_path() }}.
+ *
+ * @param input     Data tree of input parameters. Always points to the RPC itself, even for nested operations.
+ * @param output    Data tree for appending any output parameters, the operation root node is provided.
+ */
+void {{ class }}::RpcCallback(
+    [[maybe_unused]] const libyang::DataNode input, [[maybe_unused]] libyang::DataNode &output )
+{
+    // TODO: [generator] Execute the RPC operation.
+}
+{% endif %}
+
+}

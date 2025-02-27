@@ -1,0 +1,177 @@
+#pragma once
+
+#include <string>
+#include <optional>
+#include <vector>
+#include <algorithm>
+#include <functional>
+
+#include <sysrepo-cpp/sysrepo-wrapper.hpp>
+#include <srpcpp.hpp>
+
+namespace core
+{
+
+/**
+ * @brief API context.
+ */
+class ApiContext
+{
+public:
+    /**
+     * Constructor for API context.
+     */
+    ApiContext() = default;
+    virtual ~ApiContext() = default;
+};
+
+/**
+ * @brief Plugin context.
+ */
+class PluginContext : public srpc::BasePluginContext
+{
+public:
+    /**
+     * Constructor for plugin context.
+     *
+     * @param sess Plugin session from the plugin init callback.
+     */
+    // TODO: [generator] Add dependency injection objects to the constructor.
+    explicit PluginContext( const std::shared_ptr<Sysrepo::Session> &sess )
+        : srpc::BasePluginContext( sess )
+    {
+        /* Initialize the feature map. */
+        for ( const auto &yang_model : sess->getContext().modules() )
+        {
+            for ( const auto &feature : yang_model.features() )
+            {
+                m_feature_map[yang_model.name()][feature.name()] = feature.isEnabled();
+            }
+        }
+    }
+
+    /**
+     * Destructor for plugin context.
+     */
+    ~PluginContext() final = default;
+
+    /**
+     * Get the plugin name.
+     *
+     * @return Plugin name string.
+     */
+    constexpr const char *getPluginName() final
+    {
+        return "{{ plugin_name }}";
+    }
+
+    /**
+     * @brief Check whether the incoming list of features is enabled for the given model.
+     */
+    bool FeaturesEnabled( const std::string &model, const std::vector<std::string> &features ) const
+    {
+        return std::ranges::all_of(
+            features,
+            [this, &model]( const std::string &feature )
+            {
+                return m_feature_map.at( model ).at( feature );
+            } );
+    }
+
+    /**
+     * Get an API context.
+     *
+     * @param component The API component to get its context from, or @p std::nullopt to get the global API context.
+     *
+     * @return Context, or @p nullptr if not found.
+     */
+    std::shared_ptr<ApiContext> getApiContext( std::optional<std::string> component = std::nullopt ) const
+    {
+        if ( component )
+        {
+            if ( m_apiComponentCtx.contains( *component ) )
+            {
+                return m_apiComponentCtx.at( *component );
+            }
+            else
+            {
+                return nullptr;
+            }
+        }
+        else
+        {
+            return m_apiGlobalCtx;
+        }
+    }
+
+    /**
+     * Set an API context (overwriting previous contents of the referred @p component, if existing).
+     *
+     * @param context   The context to store.
+     * @param component The API component where @p context shall be stored, or @p std::nullopt to store as global API context.
+     */
+    void addApiContext(
+        const std::shared_ptr<ApiContext> &context, std::optional<std::string> component = std::nullopt )
+    {
+        if ( component )
+        {
+            m_apiComponentCtx.insert_or_assign( *component, context );
+        }
+        else
+        {
+            m_apiGlobalCtx = context;
+        }
+    }
+
+    /**
+     * Delete an API context.
+     *
+     * @note This just removes the entry from the list but others may still have a valid reference to the shared object.
+     *
+     * @param component The API component to delete the context from, or @p std::nullopt to delete the global API context.
+     */
+    void removeApiContext( std::optional<std::string> component = std::nullopt )
+    {
+        if ( component )
+        {
+            m_apiComponentCtx.erase( *component );
+        }
+        else
+        {
+            m_apiGlobalCtx.reset();
+        }
+    }
+
+    /**
+     * @brief Set/reset the Sysrepo callback session.
+     */
+    void setSysrepoCallbackSession( const std::shared_ptr<Sysrepo::Session> &session )
+    {
+        m_callback_session = session;
+    }
+
+    /**
+     * @brief Get the Sysrepo callback session.
+     */
+    const std::shared_ptr<Sysrepo::Session> &getSysrepoCallbackSession() const
+    {
+        return m_callback_session;
+    }
+
+    // TODO: [generator] Add getter functions for dependency injection objects here.
+
+private:
+    /* Feature map indexed by Yang model name and feature name. */
+    std::map<std::string, std::map<std::string, bool, std::less<>>, std::less<>> m_feature_map;
+
+    /* Arbitrary contexts owned by plugin's API. */
+    std::shared_ptr<ApiContext> m_apiGlobalCtx; ///< Global API context
+    std::map<std::string, std::shared_ptr<ApiContext>, std::less<>>
+        m_apiComponentCtx; ///< API component specific context
+
+    /* A sysrepo session that's valid only in the context of a sysrepo change callback. */
+    std::shared_ptr<Sysrepo::Session> m_callback_session{ nullptr };
+
+    // TODO: [generator] Add dependency injection objects here.
+};
+} // namespace core

@@ -1,0 +1,28 @@
+[generator]
+name = "interfaces-bridging"
+
+[yang.modules]
+main = [
+    {
+        name = "ietf-interfaces", 
+        prefix = "ietf-interfaces",
+        skip_prefix_mode = "root",
+        disable = true
+    },
+    {
+        name = "ieee802-dot1q-bridge", 
+        prefix = "dot1q-bridge",
+        skip_prefix_mode = "root",
+        disable = true
+    }
+]
+other = ["ietf-ip", "ietf-if-extensions", "ietf-if-vlan-encapsulation", "ieee802-ethernet-interface", "ieee802-dot1q-pb", "ieee802-dot1q-types", "ieee802-types"]
+
+[yang.modules.features]
+"ietf-interfaces" = ["if-mib"]
+"ieee802-dot1q-bridge" = ["port-and-protocol-based-vlan"]
+"ietf-ip" = []
+"ietf-if-extensions" = ["sub-interfaces"]
+"ieee802-ethernet-interface" = []
+
+[yang.types]

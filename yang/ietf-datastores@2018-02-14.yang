@@ -5,6 +5,7 @@ module ietf-datastores {
 
   organization
     "IETF Network Modeling (NETMOD) Working Group";
+
   contact
     "WG Web:   <https://datatracker.ietf.org/wg/netmod/>
 
@@ -24,6 +25,7 @@ module ietf-datastores {
 
      Author:   Rob Wilton
                <rwilton@cisco.com>";
+
   description
     "This YANG module defines a set of identities for identifying
      datastores.
@@ -48,6 +50,10 @@ module ietf-datastores {
     reference
       "RFC 8342: Network Management Datastore Architecture (NMDA)";
   }
+
+  /*
+   * Identities
+   */
 
   identity datastore {
     description
@@ -96,6 +102,10 @@ module ietf-datastores {
     description
       "The operational state datastore.";
   }
+
+  /*
+   * Type definitions
+   */
 
   typedef datastore-ref {
     type identityref {

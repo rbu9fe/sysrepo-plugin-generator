@@ -1,22 +1,26 @@
 module ietf-system {
   namespace "urn:ietf:params:xml:ns:yang:ietf-system";
-  prefix sys;
+  prefix "sys";
 
   import ietf-yang-types {
     prefix yang;
   }
+
   import ietf-inet-types {
     prefix inet;
   }
+
   import ietf-netconf-acm {
     prefix nacm;
   }
+
   import iana-crypt-hash {
     prefix ianach;
   }
 
   organization
     "IETF NETMOD (NETCONF Data Modeling Language) Working Group";
+
   contact
     "WG Web:   <http://tools.ietf.org/wg/netmod/>
      WG List:  <mailto:netmod@ietf.org>
@@ -32,6 +36,7 @@ module ietf-system {
 
      Editor:   Martin Bjorklund
                <mailto:mbj@tail-f.com>";
+
   description
     "This module contains a collection of YANG definitions for the
      configuration and identification of some common system
@@ -61,6 +66,27 @@ module ietf-system {
       "RFC 7317: A YANG Data Model for System Management";
   }
 
+ /*
+  * Typedefs
+  */
+
+  typedef timezone-name {
+    type string;
+    description
+      "A time zone name as used by the Time Zone Database,
+       sometimes referred to as the 'Olson Database'.
+
+       The exact set of valid values is an implementation-specific
+       matter.  Client discovery of the exact set of time zone names
+       for a particular server is out of scope.";
+    reference
+      "RFC 6557: Procedures for Maintaining the Time Zone Database";
+   }
+
+  /*
+   * Features
+   */
+
   feature radius {
     description
       "Indicates that the device can be configured as a RADIUS
@@ -76,15 +102,15 @@ module ietf-system {
   }
 
   feature local-users {
-    if-feature "authentication";
+    if-feature authentication;
     description
       "Indicates that the device supports configuration of
        local user authentication.";
   }
 
   feature radius-authentication {
-    if-feature "radius";
-    if-feature "authentication";
+    if-feature radius;
+    if-feature authentication;
     description
       "Indicates that the device supports configuration of user
        authentication over RADIUS.";
@@ -102,7 +128,7 @@ module ietf-system {
   }
 
   feature ntp-udp-port {
-    if-feature "ntp";
+    if-feature ntp;
     description
       "Indicates that the device supports the configuration of
        the UDP port for NTP servers.
@@ -128,6 +154,10 @@ module ietf-system {
        This is a 'feature', since many implementations do not support
        any port other than the default port.";
   }
+
+  /*
+   * Identities
+   */
 
   identity authentication-method {
     description
@@ -175,22 +205,14 @@ module ietf-system {
       "RFC 2865: Remote Authentication Dial In User Service (RADIUS)";
   }
 
-  typedef timezone-name {
-    type string;
-    description
-      "A time zone name as used by the Time Zone Database,
-       sometimes referred to as the 'Olson Database'.
-
-       The exact set of valid values is an implementation-specific
-       matter.  Client discovery of the exact set of time zone names
-       for a particular server is out of scope.";
-    reference
-      "RFC 6557: Procedures for Maintaining the Time Zone Database";
-  }
+  /*
+   * Configuration data nodes
+   */
 
   container system {
     description
       "System group configuration.";
+
     leaf contact {
       type string;
       description
@@ -208,9 +230,9 @@ module ietf-system {
     }
     leaf hostname {
       type inet:domain-name;
-      description
-        "The name of the host.  This name can be a single domain
-         label or the fully qualified domain name of the host.";
+     description
+       "The name of the host.  This name can be a single domain
+        label or the fully qualified domain name of the host.";
     }
     leaf location {
       type string;
@@ -227,14 +249,17 @@ module ietf-system {
                    Simple Network Management Protocol (SNMP)
                    SNMPv2-MIB.sysLocation";
     }
+
     container clock {
       description
         "Configuration of the system date and time properties.";
+
       choice timezone {
         description
           "The system time zone information.";
+
         case timezone-name {
-          if-feature "timezone-name";
+          if-feature timezone-name;
           leaf timezone-name {
             type timezone-name;
             description
@@ -258,27 +283,31 @@ module ietf-system {
         }
       }
     }
+
     container ntp {
-      if-feature "ntp";
-      presence "Enables the NTP client unless the 'enabled' leaf
-       (which defaults to 'true') is set to 'false'";
+      if-feature ntp;
+      presence
+        "Enables the NTP client unless the 'enabled' leaf
+         (which defaults to 'true') is set to 'false'";
       description
         "Configuration of the NTP client.";
+
       leaf enabled {
         type boolean;
-        default "true";
+        default true;
         description
           "Indicates that the system should attempt to
            synchronize the system clock with an NTP server
            from the 'ntp/server' list.";
       }
       list server {
-        key "name";
+        key name;
         description
           "List of NTP servers to use for system clock
            synchronization.  If '/system/ntp/enabled'
            is 'true', then the system will attempt to
            contact and utilize the specified NTP servers.";
+
         leaf name {
           type string;
           description
@@ -289,6 +318,7 @@ module ietf-system {
           description
             "The transport-protocol-specific parameters for this
              server.";
+
           case udp {
             container udp {
               description
@@ -301,9 +331,9 @@ module ietf-system {
                   "The address of the NTP server.";
               }
               leaf port {
-                if-feature "ntp-udp-port";
+                if-feature ntp-udp-port;
                 type inet:port-number;
-                default "123";
+                default 123;
                 description
                   "The port number of the NTP server.";
               }
@@ -312,19 +342,19 @@ module ietf-system {
         }
         leaf association-type {
           type enumeration {
-            enum "server" {
+            enum server {
               description
                 "Use client association mode.  This device
                  will not provide synchronization to the
                  configured NTP server.";
             }
-            enum "peer" {
+            enum peer {
               description
                 "Use symmetric active association mode.
                  This device may provide synchronization
                  to the configured NTP server.";
             }
-            enum "pool" {
+            enum pool {
               description
                 "Use client association mode with one or
                  more of the NTP servers found by DNS
@@ -333,29 +363,31 @@ module ietf-system {
                  provide synchronization to the servers.";
             }
           }
-          default "server";
+          default server;
           description
             "The desired association type for this NTP server.";
         }
         leaf iburst {
           type boolean;
-          default "false";
+          default false;
           description
             "Indicates whether this server should enable burst
              synchronization or not.";
         }
         leaf prefer {
           type boolean;
-          default "false";
+          default false;
           description
             "Indicates whether this server should be preferred
              or not.";
         }
       }
     }
+
     container dns-resolver {
       description
         "Configuration of the DNS resolver.";
+
       leaf-list search {
         type inet:domain-name;
         ordered-by user;
@@ -364,7 +396,7 @@ module ietf-system {
            a host name.";
       }
       list server {
-        key "name";
+        key name;
         ordered-by user;
         description
           "List of the DNS servers that the resolver should query.
@@ -381,6 +413,7 @@ module ietf-system {
 
            Implementations MAY limit the number of entries in this
            list.";
+
         leaf name {
           type string;
           description
@@ -391,6 +424,7 @@ module ietf-system {
           description
             "The transport-protocol-specific parameters for this
              server.";
+
           case udp-and-tcp {
             container udp-and-tcp {
               description
@@ -401,6 +435,7 @@ module ietf-system {
                            Specification
                  RFC 5966: DNS Transport over TCP - Implementation
                            Requirements";
+
               leaf address {
                 type inet:ip-address;
                 mandatory true;
@@ -408,9 +443,9 @@ module ietf-system {
                   "The address of the DNS server.";
               }
               leaf port {
-                if-feature "dns-udp-tcp-port";
+                if-feature dns-udp-tcp-port;
                 type inet:port-number;
-                default "53";
+                default 53;
                 description
                   "The UDP and TCP port number of the DNS server.";
               }
@@ -446,12 +481,15 @@ module ietf-system {
         }
       }
     }
+
     container radius {
-      if-feature "radius";
+      if-feature radius;
+
       description
         "Configuration of the RADIUS client.";
+
       list server {
-        key "name";
+        key name;
         ordered-by user;
         description
           "List of RADIUS servers used by the device.
@@ -465,6 +503,7 @@ module ietf-system {
            When the client has traversed the list 'attempts' times
            without receiving any response, it gives up and returns an
            error to the calling application.";
+
         leaf name {
           type string;
           description
@@ -475,6 +514,7 @@ module ietf-system {
           description
             "The transport-protocol-specific parameters for this
              server.";
+
           case udp {
             container udp {
               description
@@ -486,6 +526,7 @@ module ietf-system {
                 description
                   "The address of the RADIUS server.";
               }
+
               leaf authentication-port {
                 type inet:port-number;
                 default "1812";
@@ -493,9 +534,9 @@ module ietf-system {
                   "The port number of the RADIUS server.";
               }
               leaf shared-secret {
-                nacm:default-deny-all;
                 type string;
                 mandatory true;
+                nacm:default-deny-all;
                 description
                   "The shared secret, which is known to both the
                    RADIUS client and server.";
@@ -510,7 +551,7 @@ module ietf-system {
           type identityref {
             base radius-authentication-type;
           }
-          default "radius-pap";
+          default radius-pap;
           description
             "The authentication type requested from the RADIUS
              server.";
@@ -519,6 +560,7 @@ module ietf-system {
       container options {
         description
           "RADIUS client options.";
+
         leaf timeout {
           type uint8 {
             range "1..max";
@@ -530,6 +572,7 @@ module ietf-system {
              response from each RADIUS server before trying with a
              different server.";
         }
+
         leaf attempts {
           type uint8 {
             range "1..max";
@@ -541,112 +584,128 @@ module ietf-system {
         }
       }
     }
+
     container authentication {
       nacm:default-deny-write;
-      if-feature "authentication";
-      description
-        "The authentication configuration subtree.";
-      leaf-list user-authentication-order {
-        type identityref {
-          base authentication-method;
-        }
-        must "(. != \"sys:radius\" or ../../radius/server)" {
-          error-message
-            "When 'radius' is used, a RADIUS server must be configured.";
-          description
-            "When 'radius' is used as an authentication method,
-             a RADIUS server must be configured.";
-        }
-        ordered-by user;
-        description
-          "When the device authenticates a user with a password,
-           it tries the authentication methods in this leaf-list in
-           order.  If authentication with one method fails, the next
-           method is used.  If no method succeeds, the user is
-           denied access.
+      if-feature authentication;
 
-           An empty user-authentication-order leaf-list still allows
-           authentication of users using mechanisms that do not
-           involve a password.
+       description
+         "The authentication configuration subtree.";
 
-           If the 'radius-authentication' feature is advertised by
-           the NETCONF server, the 'radius' identity can be added to
-           this list.
+       leaf-list user-authentication-order {
+         type identityref {
+           base authentication-method;
+         }
+         must '(. != "sys:radius" or ../../radius/server)' {
+           error-message
+             "When 'radius' is used, a RADIUS server"
+           + " must be configured.";
+           description
+             "When 'radius' is used as an authentication method,
+              a RADIUS server must be configured.";
+         }
+         ordered-by user;
 
-           If the 'local-users' feature is advertised by the
-           NETCONF server, the 'local-users' identity can be
-           added to this list.";
-      }
-      list user {
-        if-feature "local-users";
-        key "name";
-        description
-          "The list of local users configured on this device.";
-        leaf name {
-          type string;
-          description
+         description
+           "When the device authenticates a user with a password,
+            it tries the authentication methods in this leaf-list in
+            order.  If authentication with one method fails, the next
+            method is used.  If no method succeeds, the user is
+            denied access.
+
+            An empty user-authentication-order leaf-list still allows
+            authentication of users using mechanisms that do not
+            involve a password.
+
+            If the 'radius-authentication' feature is advertised by
+            the NETCONF server, the 'radius' identity can be added to
+            this list.
+
+            If the 'local-users' feature is advertised by the
+            NETCONF server, the 'local-users' identity can be
+            added to this list.";
+       }
+
+       list user {
+         if-feature local-users;
+         key name;
+         description
+           "The list of local users configured on this device.";
+
+         leaf name {
+           type string;
+           description
             "The user name string identifying this entry.";
-        }
-        leaf password {
-          type ianach:crypt-hash;
-          description
-            "The password for this entry.";
-        }
-        list authorized-key {
-          key "name";
-          description
-            "A list of public SSH keys for this user.  These keys
-             are allowed for SSH authentication, as described in
-             RFC 4253.";
-          reference
-            "RFC 4253: The Secure Shell (SSH) Transport Layer
-                       Protocol";
-          leaf name {
-            type string;
-            description
-              "An arbitrary name for the SSH key.";
-          }
-          leaf algorithm {
-            type string;
-            mandatory true;
-            description
-              "The public key algorithm name for this SSH key.
+         }
+         leaf password {
+           type ianach:crypt-hash;
+           description
+             "The password for this entry.";
+         }
+         list authorized-key {
+           key name;
+           description
+             "A list of public SSH keys for this user.  These keys
+              are allowed for SSH authentication, as described in
+              RFC 4253.";
+           reference
+             "RFC 4253: The Secure Shell (SSH) Transport Layer
+                        Protocol";
 
-               Valid values are the values in the IANA 'Secure Shell
-               (SSH) Protocol Parameters' registry, Public Key
-               Algorithm Names.";
-            reference
-              "IANA 'Secure Shell (SSH) Protocol Parameters'
-               registry, Public Key Algorithm Names";
-          }
-          leaf key-data {
-            type binary;
-            mandatory true;
-            description
-              "The binary public key data for this SSH key, as
-               specified by RFC 4253, Section 6.6, i.e.:
+           leaf name {
+             type string;
+             description
+               "An arbitrary name for the SSH key.";
+           }
 
-                 string    certificate or public key format
-                           identifier
-                 byte[n]   key/certificate data.";
-            reference
-              "RFC 4253: The Secure Shell (SSH) Transport Layer
-                         Protocol";
-          }
-        }
-      }
-    }
+           leaf algorithm {
+             type string;
+             mandatory true;
+             description
+               "The public key algorithm name for this SSH key.
+
+                Valid values are the values in the IANA 'Secure Shell
+                (SSH) Protocol Parameters' registry, Public Key
+                Algorithm Names.";
+             reference
+               "IANA 'Secure Shell (SSH) Protocol Parameters'
+                registry, Public Key Algorithm Names";
+           }
+           leaf key-data {
+             type binary;
+             mandatory true;
+             description
+               "The binary public key data for this SSH key, as
+                specified by RFC 4253, Section 6.6, i.e.:
+
+                  string    certificate or public key format
+                            identifier
+                  byte[n]   key/certificate data.";
+             reference
+               "RFC 4253: The Secure Shell (SSH) Transport Layer
+                          Protocol";
+           }
+         }
+       }
+     }
   }
+
+  /*
+   * Operational state data nodes
+   */
+
   container system-state {
     config false;
     description
       "System group operational state.";
+
     container platform {
       description
         "Contains vendor-specific information for
          identifying the system platform and operating system.";
       reference
         "IEEE Std 1003.1-2008 - sys/utsname.h";
+
       leaf os-name {
         type string;
         description
@@ -683,14 +742,17 @@ module ietf-system {
           "IEEE Std 1003.1-2008 - utsname.machine";
       }
     }
+
     container clock {
       description
         "Monitoring of the system date and time properties.";
+
       leaf current-datetime {
         type yang:date-and-time;
         description
           "The current system date and time.";
       }
+
       leaf boot-datetime {
         type yang:date-and-time;
         description
@@ -709,7 +771,6 @@ module ietf-system {
        is set to 'true'), then this operation will fail with
        error-tag 'operation-failed' and error-app-tag value of
        'ntp-active'.";
-
     input {
       leaf current-datetime {
         type yang:date-and-time;
@@ -719,6 +780,7 @@ module ietf-system {
       }
     }
   }
+
   rpc system-restart {
     nacm:default-deny-all;
     description
@@ -734,4 +796,5 @@ module ietf-system {
        A server SHOULD send an rpc reply to the client before
        shutting down the system.";
   }
+
 }

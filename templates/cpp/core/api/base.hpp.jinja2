@@ -1,0 +1,1885 @@
+#pragma once
+
+#include <list>
+#include <optional>
+#include <memory>
+#include <ranges>
+#include <sstream>
+#include <type_traits>
+#include <numeric>
+
+#include <magic_enum.hpp>
+#include <magic_enum_containers.hpp>
+#include <libyang-cpp/DataNode.hpp>
+#include <sysrepo-cpp/Subscription.hpp>
+#include <sysrepo-cpp/Enum.hpp>
+
+#include "logging.hpp"
+#include "core/context.hpp"
+
+/**
+ * @brief An enum as a bitmap to select one or more data types.
+ */
+enum class DataType
+{
+    kNone = 0,                                    ///< No data at all.
+    kConfig = ( 1 << 0 ),                         ///< Configuration data.
+    kStatePush = ( 1 << 1 ),                      ///< State data, for that no operational callback was registered.
+    kStatePull = ( 1 << 2 ),                      ///< State data, for that an operational callback was registered.
+    kState = ( kStatePush | kStatePull ),         ///< Any state data.
+    kAll = ( kConfig | kStatePush | kStatePull ), ///< Any configuration or state data.
+};
+
+/**
+ * @brief Bitwise OR operator for @ref DataType enumeration.
+ */
+inline auto operator|( const DataType a, const DataType b )
+{
+    using Type = std::underlying_type_t<DataType>;
+    return static_cast<DataType>( static_cast<Type>( a ) | static_cast<Type>( b ) );
+}
+
+/**
+ * @brief Bitwise AND operator for @ref DataType enumeration.
+ */
+inline auto operator&( const DataType a, const DataType b )
+{
+    using Type = std::underlying_type_t<DataType>;
+    return static_cast<DataType>( static_cast<Type>( a ) & static_cast<Type>( b ) );
+}
+
+/**
+ * @brief A container of data types. Serves as a helper to iterate over the data types.
+ */
+class DataTypeContainer
+{
+private:
+    const std::vector<DataType> m_values;
+
+    static auto ConvDataTypeToVector( DataType data_type )
+    {
+        std::vector<DataType> values{};
+        auto mask{ static_cast<int32_t>( data_type ) };
+        while ( mask != 0 )
+        {
+            const auto least_type{ mask & ( -mask ) };
+            values.push_back( static_cast<DataType>( least_type ) );
+            mask &= ~( least_type );
+        }
+
+        return values;
+    }
+
+public:
+    explicit DataTypeContainer( DataType data_type )
+        : m_values( ConvDataTypeToVector( data_type ) )
+    {
+    }
+
+    const auto operator*() const
+    {
+        return m_values;
+    }
+};
+
+/**
+ * @brief Enumeration of cache validity.
+ */
+enum class CacheState
+{
+    kReserved, ///< Reserved value used at object creation.
+    kInvalid,  ///< Cache is invalid.
+    kValid     ///< Cache is valid.
+};
+
+/**
+ * @brief Enumeration of cache values.
+ */
+enum class CacheValue
+{
+    kCurrent, ///< Current data of the cache.
+    kBackup,  ///< Backup data of the cache.
+    kDefault, ///< Default data as defined by the Yang model.
+    kState    ///< State data of a config node.
+};
+
+/**
+ * @brief Enumeration for how an entry corresponds to system settings.
+ */
+enum class SystemChange
+{
+    kTransparent, ///< Constructor reads from the system, destructor doesn't remove resource from the system.
+    kCreated, ///< Entry was created but resource doesn't exist in system yet, hence, constructor will not read from the system.
+    kDeleted ///< Entry is about to be deleted, destructor will remove the resource from the system.
+};
+
+/**
+ * @brief Type of a key leaf node. May be changed or extended as desired.
+ */
+template<class T>
+using KeyNode = const T;
+
+/**
+ * @brief Type of a config node. May be changed or extended as desired.
+ */
+template<class T>
+using ConfigNode = T;
+
+/**
+ * @brief Type of a state node. May be changed or extended as desired.
+ */
+template<class T>
+using StateNode = T;
+
+/**
+ * @brief Type of a config node in a list. May be changed or extended as desired.
+ */
+template<class T>
+using ListConfigNode = T;
+
+/**
+ * @brief Type of a state node in a list. May be changed or extended as desired.
+ */
+template<class T>
+using ListStateNode = T;
+
+/**
+ * @brief Type of an RPC node. May be changed or extended as desired.
+ */
+template<class T>
+using RpcNode = T;
+
+template<typename T>
+struct is_enum_set : std::false_type
+{
+};
+
+template<typename T>
+struct is_enum_set<magic_enum::containers::set<T>> : std::true_type
+{
+};
+
+enum class TestEnumSet
+{
+};
+
+static_assert( is_enum_set<magic_enum::containers::set<TestEnumSet>>::value );
+static_assert( !is_enum_set<std::set<int>>::value );
+static_assert( !is_enum_set<int>::value );
+
+template<typename T>
+std::string GetValueAsString( const T &value )
+{
+    if constexpr ( std::is_same_v<T, bool> )
+    {
+        return static_cast<std::string>( value ? "true" : "false" );
+    }
+    else if constexpr ( std::is_enum_v<T> )
+    {
+        return static_cast<std::string>( magic_enum::enum_name( value ) );
+    }
+    else if constexpr ( is_enum_set<T>::value )
+    {
+        auto result{ std::accumulate(
+            value.begin(), value.end(), static_cast<std::string>( "" ),
+            []( std::string ret, auto entry )
+            {
+                return ret.append( static_cast<std::string>( magic_enum::enum_name( entry ) ) + " " );
+            } ) };
+
+        return result;
+    }
+    else
+    {
+        return std::to_string( value );
+    }
+}
+
+template<typename T>
+libyang::DataNode CreateNode( ::core::PluginContext &ctx, const std::string &path, const T &value )
+{
+    const auto &ly_ctx{ ctx.getSession().getContext() };
+    if constexpr ( std::is_same_v<T, std::string> )
+    {
+        return ly_ctx.newPath( path, value );
+    }
+    else
+    {
+        return ly_ctx.newPath( path, GetValueAsString<T>( value ) );
+    }
+}
+
+template<typename T>
+void AddNode( libyang::DataNode &node, const std::string &path, const T &value )
+{
+    if constexpr ( std::is_same_v<T, std::string> )
+    {
+        node.newPath( path, value );
+    }
+    else
+    {
+        node.newPath( path, GetValueAsString<T>( value ) );
+    }
+}
+
+template<typename T>
+T GetValueFromLyNode( const libyang::DataNode &node )
+{
+    if constexpr ( std::is_same_v<T, std::string> )
+    {
+        return static_cast<std::string>( node.asTerm().valueStr() );
+    }
+    else if constexpr ( std::is_enum_v<T> )
+    {
+        return static_cast<T>( std::get<libyang::Enum>( node.asTerm().value() ).value );
+    }
+    else if constexpr ( is_enum_set<T>::value )
+    {
+        T set{};
+        const auto &ly_value{ node.asTerm().value() };
+        for ( const auto &bit : std::get<std::vector<libyang::Bit>>( ly_value ) )
+        {
+            set.insert( static_cast<typename T::value_type>( bit.position ) );
+        }
+        return set;
+    }
+    else if constexpr ( std::is_floating_point_v<T> )
+    {
+        return double( std::get<libyang::Decimal64>( node.asTerm().value() ) );
+    }
+    else
+    {
+        return std::get<T>( node.asTerm().value() );
+    }
+}
+
+/**
+ * @brief Virtual interface base class for any kind of Yang nodes.
+ */
+class YangBase
+{
+public:
+    explicit YangBase(
+        const std::string &schema_path, const std::string &node_path,
+        const DataType data_type, ::core::PluginContext &ctx )
+        : m_schema_path( schema_path )
+        , m_node_path( node_path )
+        , m_data_type( data_type )
+        , m_ctx( ctx )
+    {
+    }
+
+    virtual ~YangBase() = default;
+    YangBase( const YangBase & ) = delete;
+    YangBase( YangBase && ) = delete;
+    YangBase &operator=( const YangBase & ) = delete;
+    YangBase &operator=( YangBase && ) = delete;
+
+    /**
+     * @brief Helper function to get the Yang node's schema path.
+     */
+    std::string_view GetSchemaPath() const
+    {
+        return m_schema_path;
+    }
+
+    /**
+     * @brief Helper function to get the Yang node's path.
+     */
+    std::string GetNodePath() const
+    {
+        return m_node_path;
+    }
+
+    /**
+     * @brief Helper function to get the data type of this node.
+     */
+    DataType GetDataType() const
+    {
+        return m_data_type;
+    }
+
+    /**
+     * @brief Helper function to get the plugin context.
+     */
+    ::core::PluginContext &GetPluginCtx() const
+    {
+        return m_ctx;
+    }
+
+    /**
+     * @brief Helper function to add get the API context that's owned by the calling object.
+     */
+    std::shared_ptr<core::ApiContext> GetOwnedApiContext() const
+    {
+        return m_ctx.getApiContext( m_node_path );
+    }
+
+    /**
+     * @brief Helper function to add an API context that's owned by the calling object.
+     */
+    void AddOwnedApiContext( const std::shared_ptr<core::ApiContext> &context )
+    {
+        m_ctx.addApiContext( context, m_node_path );
+    }
+
+    /**
+     * @brief Helper function to remove an API context that's owned by the calling object.
+     */
+    void RemoveOwnedApiContext()
+    {
+        m_ctx.removeApiContext( m_node_path );
+    }
+
+    /**
+     * @brief Log a change in a state leaf.
+     */
+    template<typename T>
+    void LogStateChange( const std::optional<T> &value, const std::string &prefix = "" ) const
+    {
+        if constexpr ( std::is_same_v<T, std::string> )
+        {
+            DBGLOG(
+                "%s: %s", m_node_path.data(), value.has_value() ? value->data() : "<empty>" );
+        }
+        else
+        {
+            DBGLOG(
+                "%s: %s%s", m_node_path.data(), prefix.data(),
+                value.has_value() ? GetValueAsString<T>( *value ).data() : "<empty>" );
+        }
+    }
+
+    /**
+     * @brief Log a change in a state leaf-list.
+     */
+    template<typename T>
+    void LogStateChange( const std::list<T> &list, const std::string &prefix = "" ) const
+    {
+        std::string str_list{};
+
+        for ( const auto &entry : list )
+        {
+            if constexpr ( std::is_same_v<T, std::string> )
+            {
+                str_list += "," + entry;
+            }
+            else
+            {
+                str_list += "," + GetValueAsString<T>( entry );
+            }
+        }
+
+        DBGLOG(
+            "%s: %s[%s]", m_node_path.data(), prefix.data(),
+            str_list.empty() ? str_list.data() : str_list.substr( 1 ).data() );
+    }
+
+    /**
+     * @brief Log destruction of a state or config leaf.
+     */
+    template<typename T>
+    void LogDestruction( const std::optional<T> &value ) const
+    {
+        if ( value.has_value() )
+        {
+            LogStateChange( value, "Destructing " );
+        }
+    }
+
+    /**
+     * @brief Log destruction of a state or config leaf-list.
+     */
+    template<typename T>
+    void LogDestruction( const std::list<T> &list ) const
+    {
+        if ( !list.empty() )
+        {
+            LogStateChange( list, "Destructing " );
+        }
+    }
+
+    /**
+     * @brief Log a change in a config leaf.
+     */
+    template<typename T>
+    void LogConfigChange( const std::optional<T> &old_value, const std::optional<T> &new_value ) const
+    {
+        if ( old_value != new_value )
+        {
+            if constexpr ( std::is_same_v<T, std::string> )
+            {
+                DBGLOG(
+                    "%s: %s => %s", m_node_path.data(),
+                    old_value.has_value() ? old_value->data() : "<empty>",
+                    new_value.has_value() ? new_value->data() : "<empty>" );
+            }
+            else
+            {
+                DBGLOG(
+                    "%s: %s => %s", m_node_path.data(),
+                    old_value.has_value() ? GetValueAsString<T>( *old_value ).data() : "<empty>",
+                    new_value.has_value() ? GetValueAsString<T>( *new_value ).data() : "<empty>" );
+            }
+        }
+    }
+
+    /**
+     * @brief Log a change in a config leaf-list.
+     */
+    template<typename T>
+    void LogConfigChange( const std::list<T> &old_list, const std::list<T> &new_list ) const
+    {
+        if ( old_list != new_list )
+        {
+            auto get_list_string = []( const std::list<T> &list )
+            {
+                std::string str_list{};
+
+                for ( const auto &entry : list )
+                {
+                    if constexpr ( std::is_same_v<T, std::string> )
+                    {
+                        str_list += "," + entry;
+                    }
+                    else
+                    {
+                        str_list += "," + GetValueAsString<T>( entry );
+                    }
+                }
+
+                return str_list.empty() ? str_list : str_list.substr( 1 );
+            };
+
+            DBGLOG(
+                "%s: [%s] => [%s]", m_node_path.data(), get_list_string( old_list ).data(),
+                get_list_string( new_list ).data() );
+        }
+    }
+
+    /**
+     * @brief Helper function to merge @p src Yang tree into @p dst.
+     *
+     * Deletes the node from @p dst if it's not present in @p src.
+     */
+    static void MergeNodes( std::optional<libyang::DataNode> &dst, const std::optional<libyang::DataNode> &src )
+    {
+        if ( src.has_value() )
+        {
+            if ( dst.has_value() )
+            {
+                dst->merge( src.value() );
+            }
+            else
+            {
+                dst.emplace( src.value() );
+            }
+        }
+        else
+        {
+#if 0
+            // TODO: We need to add an annotation to remove the node after merging, however, that's not (yet?) supported by sysrepo
+            for ( auto found : dst->findXPath( node_path ) )
+            {
+                found.unlink();
+            }
+#endif
+        }
+    }
+
+    /**
+     * @brief Helper function to print a Yang subtree.
+     */
+    static void DumpSubtree(
+        std::optional<libyang::DataNode> node, std::optional<libyang::PrintFlags> flags = std::nullopt )
+    {
+        std::cout << ( node ? *node->printStr(
+                                  libyang::DataFormat::JSON,
+                                  flags.value_or( libyang::PrintFlags::WithDefaultsExplicit ) )
+                            : "<none>" )
+                  << std::endl;
+    }
+
+    /**
+     * @brief Helper function to print an entire Yang tree. Implicitly moves the tree up the root.
+     */
+    static void DumpRoot( std::optional<libyang::DataNode> node )
+    {
+        if ( node )
+        {
+            auto root{ *node };
+            while ( root.parent() )
+            {
+                root = root.parent()->firstSibling();
+            }
+
+            DumpSubtree( root, libyang::PrintFlags::WithSiblings );
+        }
+        else
+        {
+            DumpSubtree( node );
+        }
+    }
+
+private:
+    const std::string m_schema_path;
+    const std::string m_node_path;
+    const DataType m_data_type;
+
+    /** Plugin context. Can be used to store arbitrary API component contexts. */
+    ::core::PluginContext &m_ctx;
+};
+
+/**
+ * @brief Special virtual interface base class for Yang key leafs.
+ */
+template<typename T>
+class YangKeyLeaf : public YangBase
+{
+public:
+    YangKeyLeaf(
+        const std::string &schema_path, const std::string &node_path,
+        const DataType data_type, ::core::PluginContext &ctx, const T &key )
+        : YangBase( schema_path, node_path, data_type, ctx )
+        , m_value( key )
+    {
+    }
+
+    ~YangKeyLeaf() override = default;
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     */
+    std::optional<libyang::DataNode> GetNode( DataType data_type ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, output );
+        return output;
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node provided in @p output.
+     *
+     * Called when generating the operational or running datastore.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param output        The data tree to insert the node into. In case the data is not present then its node is removed from @p output in case it's existing therein.
+     */
+    void InsertNode( DataType data_type, std::optional<libyang::DataNode> &output ) const
+    {
+        if ( DataType::kNone != ( GetDataType() & data_type ) )
+        {
+            const auto &data{ CreateNode( GetPluginCtx(), GetNodePath(), m_value ) };
+
+            MergeNodes( output, data );
+        }
+    }
+
+    /**
+     * @brief Get current cache by value.
+     */
+    const T &GetValue() const
+    {
+        return m_value;
+    }
+
+private:
+    /** Cached data. */
+    T m_value;
+};
+
+/**
+ * @brief Special virtual interface base class for Yang key leafs as state data.
+ */
+template<typename T>
+class YangKeyLeafState : public YangKeyLeaf<T>
+{
+public:
+    YangKeyLeafState(
+        const std::string &schema_path, const std::string &node_path,
+        ::core::PluginContext &ctx, const T &key )
+        : YangKeyLeaf<T>( schema_path, node_path, DataType::kStatePush, ctx, key )
+    {
+    }
+
+    ~YangKeyLeafState() override = default;
+};
+
+/**
+ * @brief Special virtual interface base class for Yang key leafs as config data.
+ */
+template<typename T>
+class YangKeyLeafConfig : public YangKeyLeaf<T>
+{
+public:
+    YangKeyLeafConfig(
+        const std::string &schema_path, const std::string &node_path,
+        ::core::PluginContext &ctx, const T &key, DataType data_type = DataType::kConfig )
+        : YangKeyLeaf<T>( schema_path, node_path, data_type, ctx, key )
+    {
+    }
+
+    ~YangKeyLeafConfig() override = default;
+};
+
+/**
+ * @brief Virtual interface base class for Yang containers carrying state data only.
+ */
+class YangContainerState : public YangBase
+{
+public:
+    using YangBase::YangBase;
+    ~YangContainerState() override = default;
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param request_path  The requested schema path or @p std::nullopt to get all nodes including children.
+     */
+    std::optional<libyang::DataNode> GetNode(
+        DataType data_type, const std::optional<std::string_view> &request_path = std::nullopt ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, request_path.value_or( GetSchemaPath() ), output );
+        return output;
+    }
+
+    virtual void InsertNode(
+        DataType data_type, std::string_view request_path, std::optional<libyang::DataNode> &output ) const = 0;
+    virtual void SetNode( const sysrepo::Change &change ) = 0;
+    virtual void Load( DataType data_type, std::string_view request_path ) = 0;
+};
+
+/**
+ * @brief Virtual interface base class for Yang containers carrying at least some config data.
+ */
+class YangContainerConfig : public YangBase
+{
+public:
+    YangContainerConfig(
+        const std::string &schema_path, const std::string &node_path,
+        ::core::PluginContext &ctx, DataType data_type = DataType::kConfig )
+        : YangBase( schema_path, node_path, data_type, ctx )
+    {
+    }
+
+    ~YangContainerConfig() override = default;
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param request_path  The requested schema path or @p std::nullopt to get all nodes including children.
+     */
+    std::optional<libyang::DataNode> GetNode(
+        DataType data_type, const std::optional<std::string_view> &request_path = std::nullopt ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, request_path.value_or( GetSchemaPath() ), output );
+        return output;
+    }
+
+    virtual void InsertNode(
+        DataType data_type, std::string_view request_path, std::optional<libyang::DataNode> &output ) const = 0;
+    virtual void SetNode( const sysrepo::Change &change, CacheState cache_state ) = 0;
+    virtual void Validate() const noexcept( false ) = 0;
+    virtual void RevertNode() = 0;
+    virtual void Load( DataType data_type, std::string_view request_path ) = 0;
+    virtual void Store() = 0;
+    virtual void Finalize() = 0;
+
+    /**
+     * @brief Set a configuration item in this container using @ref SetNode.
+     *
+     * @param path              Yang node path to configure. If not @p std::nullopt then it's appended to the container's node path.
+     * @param value             Value to configure.
+     * @param change_operation  Sysrepo change operation.
+     * @param cache_state       The cache state controlling whether the change shall be applied to the system on @ref Store().
+     */
+    void SetConfig(
+        const std::optional<std::string> &path, const std::optional<std::string> &value,
+        const sysrepo::ChangeOperation change_operation, const CacheState cache_state )
+    {
+        std::string node_path{ GetNodePath() };
+        if ( path )
+        {
+            node_path += "/" + path.value();
+        }
+
+        const auto node{ GetPluginCtx().getSession().getContext().newPath2( node_path, value ) };
+
+        const sysrepo::Change change{ change_operation, node.createdNode.value(), std::nullopt, std::nullopt, false };
+
+        SetNode( change, cache_state );
+    }
+};
+
+/**
+ * @brief Virtual interface base class for Yang lists carrying state data only.
+ */
+class YangListState : public YangBase
+{
+public:
+    using YangBase::YangBase;
+    ~YangListState() override = default;
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param request_path  The requested schema path or @p std::nullopt to get all nodes including children.
+     */
+    std::optional<libyang::DataNode> GetNode(
+        DataType data_type, const std::optional<std::string_view> &request_path = std::nullopt ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, request_path.value_or( GetSchemaPath() ), output );
+        return output;
+    }
+
+    virtual void InsertNode(
+        DataType data_type, std::string_view request_path, std::optional<libyang::DataNode> &output ) const = 0;
+    virtual void SetNode( const sysrepo::Change &change ) = 0;
+    virtual void Load( DataType data_type, std::string_view request_path ) = 0;
+};
+
+/**
+ * @brief Virtual interface base class for Yang lists carrying at least some config data.
+ */
+class YangListConfig : public YangBase
+{
+public:
+    YangListConfig(
+        const std::string &schema_path, const std::string &node_path,
+        ::core::PluginContext &ctx, SystemChange system_change, DataType data_type = DataType::kConfig )
+        : YangBase( schema_path, node_path, data_type, ctx )
+        , m_system_change( system_change )
+    {
+    }
+
+    ~YangListConfig() override = default;
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param request_path  The requested schema path or @p std::nullopt to get all nodes including children.
+     */
+    std::optional<libyang::DataNode> GetNode(
+        DataType data_type, const std::optional<std::string_view> &request_path = std::nullopt ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, request_path.value_or( GetSchemaPath() ), output );
+        return output;
+    }
+
+    virtual void InsertNode(
+        DataType data_type, std::string_view request_path, std::optional<libyang::DataNode> &output ) const = 0;
+    virtual void SetNode( const sysrepo::Change &change, CacheState cache_state ) = 0;
+    virtual void Validate() const noexcept( false ) = 0;
+    virtual void RevertNode() = 0;
+    virtual void Load( DataType data_type, std::string_view request_path ) = 0;
+    virtual void Store() = 0;
+    virtual void Finalize() = 0;
+
+    /**
+     * @brief Get the current change type of this configuration entry.
+     */
+    SystemChange GetSystemChange() const
+    {
+        return m_system_change;
+    }
+
+    /**
+     * @brief Set the change type for this configuration entry.
+     */
+    void SetSystemChange( SystemChange system_change )
+    {
+        m_system_change = system_change;
+    }
+
+    /**
+     * @brief Set a configuration item in this container using @ref SetNode.
+     *
+     * @param path              Yang node path to configure. If not @p std::nullopt then it's appended to the container's node path.
+     * @param value             Value to configure.
+     * @param change_operation  Sysrepo change operation.
+     * @param cache_state       The cache state controlling whether the change shall be applied to the system on @ref Store().
+     */
+    void SetConfig(
+        const std::optional<std::string> &path, const std::optional<std::string> &value,
+        const sysrepo::ChangeOperation change_operation, const CacheState cache_state )
+    {
+        std::string node_path{ GetNodePath() };
+        if ( path )
+        {
+            node_path += "/" + path.value();
+        }
+
+        const auto node{ GetPluginCtx().getSession().getContext().newPath2( node_path, value ) };
+
+        const sysrepo::Change change{ change_operation, node.createdNode.value(), std::nullopt, std::nullopt, false };
+
+        SetNode( change, cache_state );
+    }
+
+private:
+    /** If not @p SystemChange::kTransparent this indicates that this list entry was just created or is to be deleted, which was not yet applied to the system. */
+    SystemChange m_system_change;
+};
+
+/**
+ * @brief Interface base class for Yang leafs carrying state data.
+ */
+template<typename T>
+class YangLeafState : public YangBase
+{
+public:
+    using YangBase::YangBase;
+    ~YangLeafState() override = default;
+
+    /**
+     * @brief Get current cache by value.
+     */
+    const std::optional<T> &GetValue() const
+    {
+        return m_value;
+    }
+
+    /**
+     * @brief Set current cache to the incoming value.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param value         The value to set or @p std::nullopt to delete.
+     */
+    void SetValue( const std::optional<T> &value )
+    {
+        if ( value != m_value )
+        {
+            LogStateChange( value );
+
+            m_value = value;
+        }
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     */
+    std::optional<libyang::DataNode> GetNode( DataType data_type ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, output );
+        return output;
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node provided in @p output.
+     *
+     * Called when generating the operational or running datastore.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param output        The data tree to insert the node into. In case the data is not present then its node is removed from @p output in case it's existing therein.
+     */
+    void InsertNode( DataType data_type, std::optional<libyang::DataNode> &output ) const
+    {
+        if ( DataType::kNone != ( GetDataType() & data_type ) )
+        {
+            const auto &data{
+                m_value.has_value() ? std::make_optional<libyang::DataNode>(
+                                          CreateNode( GetPluginCtx(), GetNodePath(), m_value.value() ) )
+                                    : std::nullopt };
+
+            MergeNodes( output, data );
+        }
+    }
+
+    /**
+     * @brief Set current cache from a changed Yang data node.
+     *
+     * Called either by internal changes to the operational (push-data) datastore or by sysrepo change callbacks of the running datastore.
+     *
+     * @param change        Sysrepo change information.
+     */
+    void SetNode( const sysrepo::Change &change )
+    {
+        if ( change.node.path() == GetNodePath() )
+        {
+            using enum sysrepo::ChangeOperation;
+            if ( change.operation == Created || change.operation == Modified )
+            {
+                SetValue( GetValueFromLyNode<T>( change.node ) );
+            }
+            else if ( change.operation == Deleted )
+            {
+                SetValue( std::nullopt );
+            }
+        }
+    }
+
+    virtual void Load( DataType data_type ) = 0;
+
+    /**
+     * @brief Reload the operational data from the system and update the operational datastore contents.
+     *
+     * @note This function does @p not commit the changes, instead, that must be done manually at a central place possibly for multiple changes at once.
+     *
+     * @param session   The sysrepo session in which to store the new data.
+     */
+    void UpdateDatastore( Sysrepo::SessionParam session )
+    {
+        const auto datastore{ session.activeDatastore() };
+
+        try
+        {
+            session.switchDatastore( sysrepo::Datastore::Operational );
+
+            const auto old_value{ GetValue() };
+
+            Load( DataType::kStatePush );
+
+            if ( const auto &new_value{ GetValue() }; new_value != old_value )
+            {
+                if ( new_value.has_value() )
+                {
+                    if constexpr ( std::is_same_v<T, std::string> )
+                    {
+                        session.setItem( GetNodePath(), new_value.value() );
+                    }
+                    else
+                    {
+                        session.setItem( GetNodePath(), GetValueAsString( new_value.value() ) );
+                    }
+                }
+                else
+                {
+                    session.deleteItem( GetNodePath() );
+                }
+            }
+        }
+        catch ( const std::system_error &e )
+        {
+            DBGLOG(
+                "Failed to update %s data under '%s': %s",
+                magic_enum::enum_name( sysrepo::Datastore::Operational ).data(), GetNodePath().data(), e.what() );
+        }
+
+        session.switchDatastore( datastore );
+    }
+
+private:
+    /** Cached data. */
+    std::optional<T> m_value;
+};
+
+/**
+ * @brief Interface base class for Yang leafs carrying config data.
+ */
+template<typename T>
+class YangLeafConfig : public YangBase
+{
+public:
+    YangLeafConfig(
+        const std::string &schema_path, const std::string &node_path,
+        ::core::PluginContext &ctx, const std::optional<T> &default_value = std::nullopt,
+        DataType data_type = DataType::kConfig )
+        : YangBase( schema_path, node_path, data_type, ctx )
+        , m_value_default( default_value )
+    {
+    }
+
+    ~YangLeafConfig() override
+    {
+        LogDestruction( m_value );
+    }
+
+    YangLeafConfig( YangLeafConfig & ) = default;
+    YangLeafConfig &operator=( const YangLeafConfig & ) = default;
+    YangLeafConfig( YangLeafConfig && ) noexcept = default;
+    YangLeafConfig &operator=( YangLeafConfig && ) noexcept = default;
+
+    /**
+     * @brief Check whether the cache currently is valid.
+     */
+    CacheState GetCacheState() const
+    {
+        return m_cache_state;
+    }
+
+    /**
+     * @brief Set the cache's validity state.
+     */
+    void SetCacheState( CacheState state )
+    {
+        m_cache_state = state;
+    }
+
+    /**
+     * @brief The current cache value has been applied to the system.
+     */
+    void CurrentCacheValueWasApplied()
+    {
+        m_applied_cache_value = CacheValue::kCurrent;
+    }
+
+    /**
+     * @brief Get current cache by value.
+     */
+    const std::optional<T> &GetValue( CacheValue cache_value = CacheValue::kCurrent ) const
+    {
+        switch ( cache_value )
+        {
+            using enum CacheValue;
+
+            case kCurrent:
+                return m_value;
+            case kBackup:
+                return m_value_backup;
+            case kDefault:
+                return m_value_default;
+            case kState:
+                return m_value_state;
+        }
+
+        /* Never reached. */
+        return m_value;
+    }
+
+    /**
+     * @brief Set current cache to the incoming value.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param value         The value to set or @p std::nullopt to delete.
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+     * @param data_type     Controls what data should be changed. Useful for config nodes that carry different state data.
+     */
+    void SetValue( const std::optional<T> &value, CacheState cache_state, DataType data_type = DataType::kConfig )
+    {
+        using enum DataType;
+        if ( const auto match{ GetDataType() & data_type }; kNone != ( match & kConfig ) )
+        {
+            using enum CacheState;
+
+            if ( m_cache_state == kValid )
+            {
+                m_value_backup = m_value;
+            }
+
+            if ( m_cache_state == kValid && cache_state == kInvalid )
+            {
+                m_applied_cache_value.emplace( CacheValue::kBackup );
+            }
+            else if ( cache_state == kValid )
+            {
+                m_applied_cache_value.emplace( CacheValue::kCurrent );
+            }
+
+            LogConfigChange( m_value_backup, value );
+
+            m_value = value;
+            m_cache_state = cache_state;
+        }
+        else if ( kNone != ( match & kState ) )
+        {
+            LogStateChange( value );
+
+            m_value_state = value;
+        }
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     */
+    std::optional<libyang::DataNode> GetNode( DataType data_type ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, output );
+        return output;
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node provided in @p output.
+     *
+     * Called when generating the operational or running datastore.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param output        The data tree to insert the node into. In case the data is not present then its node is removed from @p output in case it's existing therein.
+     */
+    void InsertNode( DataType data_type, std::optional<libyang::DataNode> &output ) const
+    {
+        const auto get_data{
+            [this]( const std::optional<T> &value ) -> std::optional<libyang::DataNode>
+            {
+                return value.has_value() ? std::make_optional<libyang::DataNode>(
+                                               CreateNode( GetPluginCtx(), GetNodePath(), value.value() ) )
+                                         : std::nullopt;
+            } };
+
+        /* Process only desired data types. */
+        using enum DataType;
+        if ( const auto match{ GetDataType() & data_type }; kNone != ( match & kConfig ) )
+        {
+            MergeNodes( output, get_data( m_value ) );
+        }
+        else if ( kNone != ( match & kState ) )
+        {
+            MergeNodes( output, get_data( m_value_state ) );
+        }
+    }
+
+    /**
+     * @brief Set current cache from a changed Yang data node.
+     *
+     * Called either by internal changes to the operational (push-data) datastore or by sysrepo change callbacks of the running datastore.
+     *
+     * @param change        Sysrepo change information.
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+     * @param data_type     Controls what data should be changed. Useful for config nodes that carry different state data.
+     */
+    void SetNode( const sysrepo::Change &change, CacheState cache_state, DataType data_type = DataType::kConfig )
+    {
+        if ( change.node.path() == GetNodePath() )
+        {
+            using enum sysrepo::ChangeOperation;
+            if ( change.operation == Created || change.operation == Modified )
+            {
+                SetValue( GetValueFromLyNode<T>( change.node ), cache_state, data_type );
+            }
+            else if ( change.operation == Deleted )
+            {
+                SetValue( std::nullopt, cache_state, data_type );
+            }
+        }
+    }
+
+    /**
+     * @brief Restore the current cache from its backup.
+     *
+     * Called by handling the Abort event in a sysrepo change callback.
+     */
+    void RevertNode()
+    {
+        if ( m_cache_state == CacheState::kInvalid )
+        {
+            if ( m_applied_cache_value.value_or( CacheValue::kBackup ) == CacheValue::kBackup )
+            {
+                /* The backup value is still active, just restore the current cache and validate it. */
+                m_value = m_value_backup;
+                m_cache_state = CacheState::kValid;
+            }
+            else
+            {
+                /* The current cache value has already been applied, swap current and backup values and leave it invalid so that it'll be applied. */
+                std::swap( m_value, m_value_backup );
+            }
+        }
+    }
+
+    /**
+     * @brief Finalize previously applied (and perhaps reverted) changes.
+     *
+     * Called by handling the Done or Abort event in a sysrepo change callback.
+     */
+    void Finalize()
+    {
+        /* Validate the cache. */
+        SetCacheState( CacheState::kValid );
+    }
+
+    /**
+     * @brief Reload either the operational or config data from the system and update the operational or running datastore contents.
+     *
+     * @note Updating the operational data is meaningful only if the config node carries operational push data that differs from the config data.
+     * @note This function does @p not commit the changes, instead, that must be done manually at a central place possibly for multiple changes at once.
+     *
+     * @param session   The sysrepo session in which to store the new data.
+     */
+    void UpdateDatastore( Sysrepo::SessionParam session, sysrepo::Datastore datastore )
+    {
+        const auto old_datastore{ session.activeDatastore() };
+        const auto cache_type{
+            datastore == sysrepo::Datastore::Operational ? CacheValue::kState : CacheValue::kCurrent };
+        const auto data_type{ datastore == sysrepo::Datastore::Operational ? DataType::kStatePush : DataType::kConfig };
+
+        try
+        {
+            session.switchDatastore( datastore );
+
+            const auto old_value{ GetValue( cache_type ) };
+
+            Load( data_type );
+
+            if ( const auto &new_value{ GetValue( cache_type ) }; new_value != old_value )
+            {
+                if ( new_value.has_value() )
+                {
+                    if constexpr ( std::is_same_v<T, std::string> )
+                    {
+                        session.setItem( GetNodePath(), new_value.value() );
+                    }
+                    else
+                    {
+                        session.setItem( GetNodePath(), GetValueAsString( new_value.value() ) );
+                    }
+                }
+                else
+                {
+                    session.deleteItem( GetNodePath() );
+                }
+            }
+        }
+        catch ( const std::system_error &e )
+        {
+            DBGLOG(
+                "Failed to update %s data under '%s': %s",
+                magic_enum::enum_name( datastore ).data(), GetNodePath().data(), e.what() );
+        }
+
+        session.switchDatastore( old_datastore );
+    }
+
+    virtual void Validate() const noexcept( false ) = 0;
+    virtual void Load( DataType data_type ) = 0;
+    virtual void Store() = 0;
+
+private:
+    /** Cached config data. */
+    std::optional<T> m_value;
+
+    /** Backup config data. Required to discard changes without applying them to the system. */
+    std::optional<T> m_value_backup;
+
+    /** Default config data. */
+    const std::optional<T> m_value_default;
+
+    /** Cached state data. Used to handle different data of the same node for running and operational datastores. */
+    std::optional<T> m_value_state;
+
+    /** Set to @p true if the internal cache is in sync to the system. */
+    CacheState m_cache_state = CacheState::kReserved;
+
+    /** Tracks which cache value (current or backup) is currently applied to the system. */
+    std::optional<CacheValue> m_applied_cache_value{ std::nullopt };
+};
+
+/**
+ * @brief Interface base class for Yang leaf-lists carrying state data.
+ */
+template<typename T>
+class YangLeafListState : public YangBase
+{
+public:
+    using YangBase::YangBase;
+    ~YangLeafListState() override = default;
+
+    /**
+     * @brief Get current cache by value.
+     */
+    const std::list<T> &GetValues() const
+    {
+        return m_list;
+    }
+
+    /**
+     * @brief Set current cache to the incoming list.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param list          The values to set.
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+     */
+    void SetValues( const std::list<T> &list )
+    {
+        if ( list != m_list )
+        {
+            LogStateChange( list );
+
+            m_list = list;
+        }
+    }
+
+    /**
+     * @brief Add the incoming value to the cache.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param value         The value to add.
+     */
+    void AddValue( const T &value )
+    {
+        m_list.emplace_back( value );
+
+        LogStateChange( m_list );
+    }
+
+    /**
+     * @brief Delete the incoming value from the cache.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param value         The value to delete.
+     */
+    void DeleteValue( const T &value )
+    {
+        m_list.erase( std::ranges::find( m_list, value ) );
+
+        LogStateChange( m_list );
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     */
+    std::optional<libyang::DataNode> GetNode( DataType data_type ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, output );
+        return output;
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node provided in @p output.
+     *
+     * Called when generating the operational or running datastore.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param output        The data tree to insert the node into. In case the data is not present then its node is removed from @p output in case it's existing therein.
+     */
+    void InsertNode( DataType data_type, std::optional<libyang::DataNode> &output ) const
+    {
+        if ( DataType::kNone != ( GetDataType() & data_type ) )
+        {
+            std::optional<libyang::DataNode> data{};
+            for ( const auto &value : m_list )
+            {
+                if ( !data.has_value() )
+                {
+                    data.emplace( CreateNode( GetPluginCtx(), GetNodePath(), value ) );
+                }
+                else
+                {
+                    AddNode( *data, GetNodePath(), value );
+                }
+            }
+
+            MergeNodes( output, data );
+        }
+    }
+
+    /**
+     * @brief Set current cache from a changed Yang data node.
+     *
+     * Called either by internal changes to the operational (push-data) datastore or by sysrepo change callbacks of the running datastore.
+     *
+     * @param change        Sysrepo change information.
+     */
+    void SetNode( const sysrepo::Change &change )
+    {
+        if ( change.node.path().starts_with( GetNodePath() ) )
+        {
+            auto value{ GetValueFromLyNode<T>( change.node ) };
+
+            using enum sysrepo::ChangeOperation;
+            if ( change.operation == Created || change.operation == Modified )
+            {
+                AddValue( value );
+            }
+            else if ( change.operation == Deleted )
+            {
+                DeleteValue( value );
+            }
+        }
+    }
+
+    virtual void Load( DataType data_type ) = 0;
+
+private:
+    /** Cached data. */
+    std::list<T> m_list;
+};
+
+/**
+ * @brief Interface base class for Yang leaf-lists carrying config data.
+ */
+template<typename T>
+class YangLeafListConfig : public YangBase
+{
+public:
+    YangLeafListConfig(
+        const std::string &schema_path, const std::string &node_path,
+        ::core::PluginContext &ctx, const std::list<T> &default_list = {}, DataType data_type = DataType::kConfig )
+        : YangBase( schema_path, node_path, data_type, ctx )
+        , m_list_default( default_list )
+    {
+    }
+
+    ~YangLeafListConfig() override
+    {
+        LogDestruction( m_list );
+    }
+
+    YangLeafListConfig( YangLeafListConfig & ) = default;
+    YangLeafListConfig &operator=( const YangLeafListConfig & ) = default;
+    YangLeafListConfig( YangLeafListConfig && ) noexcept = default;
+    YangLeafListConfig &operator=( YangLeafListConfig && ) noexcept = default;
+
+    /**
+     * @brief Check whether the cache currently is valid.
+     */
+    CacheState GetCacheState() const
+    {
+        return m_cache_state;
+    }
+
+    /**
+     * @brief Set the cache's validity state.
+     */
+    void SetCacheState( CacheState state )
+    {
+        m_cache_state = state;
+    }
+
+    /**
+     * @brief The current cache value has been applied to the system.
+     */
+    void CurrentCacheValueWasApplied()
+    {
+        m_applied_cache_value = CacheValue::kCurrent;
+    }
+
+    /**
+     * @brief Get current cache by value.
+     */
+    const std::list<T> &GetValues( CacheValue cache_value = CacheValue::kCurrent ) const
+    {
+        switch ( cache_value )
+        {
+            using enum CacheValue;
+
+            case kCurrent:
+                return m_list;
+            case kBackup:
+                return m_list_backup;
+            case kDefault:
+                return m_list_default;
+            case kState:
+                return m_list_state;
+        }
+
+        /* Never reached. */
+        return m_list;
+    }
+
+    /**
+     * @brief Set current cache to the incoming list.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param list          The values to set.
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+     * @param data_type     Controls what data should be changed. Useful for config nodes that carry different state data.
+     */
+    void SetValues( const std::list<T> &list, CacheState cache_state, DataType data_type = DataType::kConfig )
+    {
+        using enum DataType;
+        if ( const auto match{ GetDataType() & data_type }; kNone != ( match & kConfig ) )
+        {
+            using enum CacheState;
+
+            if ( m_cache_state == kValid )
+            {
+                m_list_backup = m_list;
+            }
+
+            if ( m_cache_state == kValid && cache_state == kInvalid )
+            {
+                m_applied_cache_value.emplace( CacheValue::kBackup );
+            }
+            else if ( cache_state == kValid )
+            {
+                m_applied_cache_value.emplace( CacheValue::kCurrent );
+            }
+
+            LogConfigChange( m_list_backup, list );
+
+            m_list = list;
+            m_cache_state = cache_state;
+        }
+        else if ( kNone != ( match & kState ) )
+        {
+            LogStateChange( list );
+
+            m_list_state = list;
+        }
+    }
+
+    /**
+     * @brief Add the incoming value to the cache.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param value         The value to add.
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+     * @param data_type     Controls what data should be changed. Useful for config nodes that carry different state data.
+     */
+    void AddValue( const T &value, CacheState cache_state, DataType data_type = DataType::kConfig )
+    {
+        using enum DataType;
+        if ( const auto match{ GetDataType() & data_type }; kNone != ( match & kConfig ) )
+        {
+            using enum CacheState;
+            if ( m_cache_state == kValid && cache_state == kInvalid )
+            {
+                m_list_backup = m_list;
+
+                m_applied_cache_value.emplace( CacheValue::kBackup );
+            }
+            else if ( cache_state == kValid )
+            {
+                m_applied_cache_value.emplace( CacheValue::kCurrent );
+            }
+
+            m_list.emplace_back( value );
+            m_cache_state = cache_state;
+
+            LogConfigChange( m_list_backup, m_list );
+        }
+        else if ( kNone != ( match & kState ) )
+        {
+            m_list_state.emplace_back( value );
+
+            LogStateChange( m_list_state );
+        }
+    }
+
+    /**
+     * @brief Delete the incoming value from the cache.
+     *
+     * Called when applying the startup datastore to the system and by changes to the running datastore.
+     *
+     * @param value         The value to delete.
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+     * @param data_type     Controls what data should be changed. Useful for config nodes that carry different state data.
+     */
+    void DeleteValue( const T &value, CacheState cache_state, DataType data_type = DataType::kConfig )
+    {
+        using enum DataType;
+        if ( const auto match{ GetDataType() & data_type }; kNone != ( match & kConfig ) )
+        {
+            using enum CacheState;
+            if ( m_cache_state == kValid && cache_state == kInvalid )
+            {
+                m_list_backup = m_list;
+
+                m_applied_cache_value.emplace( CacheValue::kBackup );
+            }
+            else if ( cache_state == kValid )
+            {
+                m_applied_cache_value.emplace( CacheValue::kCurrent );
+            }
+
+            m_list.erase( std::ranges::find( m_list, value ) );
+            m_cache_state = cache_state;
+
+            LogConfigChange( m_list_backup, m_list );
+        }
+        else if ( kNone != ( match & kState ) )
+        {
+            m_list_state.erase( std::ranges::find( m_list_state, value ) );
+
+            LogStateChange( m_list_state );
+        }
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node.
+     *
+     * Convenience function for internal use, i.e. not called from outside the Yang node classes.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     */
+    std::optional<libyang::DataNode> GetNode( DataType data_type ) const
+    {
+        std::optional<libyang::DataNode> output{};
+        InsertNode( data_type, output );
+        return output;
+    }
+
+    /**
+     * @brief Get current cache as a Yang data node provided in @p output.
+     *
+     * Called when generating the operational or running datastore.
+     *
+     * @param data_type     Controls what data should be returned. If there is no match then @p output is not modified.
+     * @param output        The data tree to insert the node into. In case the data is not present then its node is removed from @p output in case it's existing therein.
+     */
+    void InsertNode( DataType data_type, std::optional<libyang::DataNode> &output ) const
+    {
+        using enum DataType;
+
+        if ( const auto match{ GetDataType() & data_type }; match != kNone )
+        {
+            std::optional<libyang::DataNode> data{};
+            const auto add_data{ [this, &data]( const std::list<T> &list )
+                                 {
+                                     const auto &ly_ctx{ GetPluginCtx().getSession().getContext() };
+                                     for ( const auto &value : list )
+                                     {
+                                         if ( !data.has_value() )
+                                         {
+                                             data.emplace( CreateNode( GetPluginCtx(), GetNodePath(), value ) );
+                                         }
+                                         else
+                                         {
+                                             AddNode( *data, GetNodePath(), value );
+                                         }
+                                     }
+                                 } };
+
+            if ( DataType::kNone != ( match & kConfig ) && !m_list.empty() )
+            {
+                add_data( m_list );
+            }
+            else if ( DataType::kNone != ( match & kState ) && !m_list_state.empty() )
+            {
+                add_data( m_list_state );
+            }
+
+            MergeNodes( output, data );
+        }
+    }
+
+    /**
+     * @brief Set current cache from a changed Yang data node.
+     *
+     * Called either by internal changes to the operational (push-data) datastore or by sysrepo change callbacks of the running datastore.
+     *
+     * @param change        Sysrepo change information.
+     * @param cache_state   Denotes whether the incoming setting already reflects the current system setting and, therefore, validates the cache.
+     * @param data_type     Controls what data should be changed. Useful for config nodes that carry different state data.
+     */
+    void SetNode( const sysrepo::Change &change, CacheState cache_state, DataType data_type = DataType::kConfig )
+    {
+        if ( change.node.path().starts_with( GetNodePath() ) )
+        {
+            auto value{ GetValueFromLyNode<T>( change.node ) };
+
+            using enum sysrepo::ChangeOperation;
+            if ( change.operation == Created || change.operation == Modified )
+            {
+                AddValue( value, cache_state, data_type );
+            }
+            else if ( change.operation == Deleted )
+            {
+                DeleteValue( value, cache_state, data_type );
+            }
+        }
+    }
+
+    /**
+     * @brief Revert any prepared changes that were not yet applied to the system.
+     *
+     * Called by handling the Abort event in a sysrepo change callback.
+     */
+    void RevertNode()
+    {
+        if ( m_cache_state == CacheState::kInvalid )
+        {
+            if ( m_applied_cache_value.value_or( CacheValue::kBackup ) == CacheValue::kBackup )
+            {
+                /* The backup value is still active, just restore the current cache and validate it. */
+                m_list = m_list_backup;
+                m_cache_state = CacheState::kValid;
+            }
+            else
+            {
+                /* The current cache value has already been applied, swap current and backup values and leave it invalid so that it'll be applied. */
+                std::swap( m_list, m_list_backup );
+            }
+        }
+    }
+
+    /**
+     * @brief Finalize previously applied (and perhaps reverted) changes.
+     *
+     * Called by handling the Done or Abort event in a sysrepo change callback.
+     */
+    void Finalize()
+    {
+        /* Validate the cache. */
+        SetCacheState( CacheState::kValid );
+    }
+
+    /**
+     * @brief Reload either the operational or config data from the system and update the operational or running datastore contents.
+     *
+     * @note Updating the operational data is meaningful only if the config node carries operational push data that differs from the config data.
+     * @note This function does @p not commit the changes, instead, that must be done manually at a central place possibly for multiple changes at once.
+     *
+     * @param session   The sysrepo session in which to store the new data.
+     */
+    void UpdateDatastore( Sysrepo::SessionParam session, sysrepo::Datastore datastore )
+    {
+        const auto old_datastore{ session.activeDatastore() };
+        const auto cache_type{
+            datastore == sysrepo::Datastore::Operational ? CacheValue::kState : CacheValue::kCurrent };
+        const auto data_type{ datastore == sysrepo::Datastore::Operational ? DataType::kStatePush : DataType::kConfig };
+
+        try
+        {
+            session.switchDatastore( datastore );
+
+            const auto old_values{ GetValues( cache_type ) };
+
+            Load( data_type );
+
+            if ( const auto &new_values{ GetValues( cache_type ) }; new_values != old_values )
+            {
+                if ( !new_values.empty() )
+                {
+                    std::string str_values{};
+                    for ( const auto &value : new_values )
+                    {
+                        if ( !str_values.empty() )
+                        {
+                            str_values += ",";
+                        }
+
+                        if constexpr ( std::is_same_v<T, std::string> )
+                        {
+                            str_values += value;
+                        }
+                        else
+                        {
+                            str_values += GetValueAsString( value );
+                        }
+                    }
+
+                    session.setItem( GetNodePath(), str_values );
+                }
+                else
+                {
+                    session.deleteItem( GetNodePath() );
+                }
+            }
+        }
+        catch ( const std::system_error &e )
+        {
+            DBGLOG(
+                "Failed to update %s data under '%s': %s",
+                magic_enum::enum_name( datastore ).data(), GetNodePath().data(), e.what() );
+        }
+
+        session.switchDatastore( old_datastore );
+    }
+
+    virtual void Validate() const noexcept( false ) = 0;
+    virtual void Load( DataType data_type ) = 0;
+    virtual void Store() = 0;
+
+private:
+    /** Cached config data. */
+    std::list<T> m_list;
+
+    /** Backup config data. Required to discard changes without applying them to the system. */
+    std::list<T> m_list_backup;
+
+    /** Default config data. */
+    const std::list<T> &m_list_default;
+
+    /** Cached state data. Used to handle different data of the same node for running and operational datastores. */
+    std::list<T> m_list_state;
+
+    /** Set to @p CacheState::kValid if the internal cache is in sync to the system. */
+    CacheState m_cache_state = CacheState::kReserved;
+
+    /** Tracks which cache value (current or backup) is currently applied to the system. */
+    std::optional<CacheValue> m_applied_cache_value{ std::nullopt };
+};
+
+/**
+ * @brief Interface base class for Yang RPC nodes.
+ */
+class YangRpc : public YangBase
+{
+public:
+    explicit YangRpc(
+        const std::string &schema_path, const std::string &node_path,
+        ::core::PluginContext &ctx )
+        : YangBase( schema_path, node_path, DataType::kNone, ctx )
+    {
+    }
+
+    ~YangRpc() override = default;
+
+    srpc::RpcCallback GetRpcCallback() noexcept
+    {
+        return srpc::RpcCallback{ GetNodePath(), std::bind_front( &YangRpc::RpcCallbackWrapper, this ) };
+    }
+
+private:
+    virtual void RpcCallback( const libyang::DataNode input, libyang::DataNode &output ) = 0;
+
+    sysrepo::ErrorCode RpcCallbackWrapper(
+        [[maybe_unused]] Sysrepo::SessionParam session, [[maybe_unused]] uint32_t subscriptionId,
+        [[maybe_unused]] std::string_view path, const libyang::DataNode input, [[maybe_unused]] sysrepo::Event event,
+        [[maybe_unused]] uint32_t requestId, libyang::DataNode output ) noexcept
+    {
+        auto rc{ sysrepo::ErrorCode::Ok };
+
+        DBGLOG( "Entering sysrepo RPC callback at '%s'.", path.data() );
+
+        try
+        {
+            RpcCallback( input, output );
+        }
+        catch ( const std::system_error &e )
+        {
+            if ( const auto &category{ e.code().category() };
+                 0 == static_cast<std::string_view>( category.name() ).compare( "sysrepo" ) )
+            {
+                rc = static_cast<sysrepo::ErrorCode>( e.code().value() );
+            }
+            else
+            {
+                rc = sysrepo::ErrorCode::OperationFailed;
+            }
+
+            DBGLOG( "RPC at '%s': %s", path.data(), e.what() );
+        }
+        catch ( const std::runtime_error &e )
+        {
+            DBGLOG( "RPC at '%s': %s", path.data(), e.what() );
+            rc = sysrepo::ErrorCode::OperationFailed;
+        }
+
+        DBGLOG( "Leaving sysrepo RPC callback at '%s'.", path.data() );
+
+        return rc;
+    }
+};

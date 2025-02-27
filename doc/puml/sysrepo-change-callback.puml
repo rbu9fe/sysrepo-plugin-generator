@@ -1,0 +1,129 @@
+@startuml
+
+participant "sysrepo" as SYSREPO
+participant "module" as MODULE
+participant "root node" as ROOT
+collections "children" as CHILDREN
+
+SYSREPO -> MODULE: ""changeCallback()""
+
+activate MODULE
+    alt event == Change
+
+        loop changes
+            MODULE -> ROOT: ""SetNode(change)""
+            activate ROOT
+                loop children
+                    ROOT -> CHILDREN: ""SetNode(change)""
+                    activate CHILDREN
+                    note right
+                        Container / list: Forward to children.
+                        Leaf / leaf-list: Update cache.
+                    end note
+                    CHILDREN --> ROOT: Success status
+                    deactivate CHILDREN
+                end
+            ROOT --> MODULE: Success status
+            deactivate ROOT
+        end
+
+        MODULE -> ROOT: ""Validate()""
+        activate ROOT
+            loop children
+                ROOT -> CHILDREN: ""Validate()""
+                activate CHILDREN
+                note right
+                    Container / list: Forward to children.
+                    Leaf / leaf-list: Validate cache.
+                end note
+                CHILDREN --> ROOT: Success status
+                deactivate CHILDREN
+            end
+        ROOT --> MODULE: Success status
+        deactivate ROOT
+
+        MODULE -> ROOT: ""Store()""
+        activate ROOT
+            loop children
+                ROOT -> CHILDREN: ""Store()""
+                activate CHILDREN
+                note right
+                    Container / list: Forward to children.
+                    Leaf / leaf-list: Apply cache to system.
+                end note
+                CHILDREN --> ROOT: Success status
+                deactivate CHILDREN
+            end
+        ROOT --> MODULE: Success status
+        deactivate ROOT
+
+    else event == Done
+
+        MODULE -> ROOT: ""Finalize()""
+        activate ROOT
+            loop children
+                ROOT -> CHILDREN: ""Finalize()""
+                activate CHILDREN
+                note right
+                    Container / list: Forward to children.
+                    Leaf / leaf-list: Delete backup.
+                end note
+                CHILDREN --> ROOT
+                deactivate CHILDREN
+            end
+        ROOT --> MODULE
+        deactivate ROOT
+
+    else event == Abort
+
+        MODULE -> ROOT: ""Revert()""
+        activate ROOT
+            loop children
+                ROOT -> CHILDREN: ""Revert()""
+                activate CHILDREN
+                note right
+                    Container / list: Forward to children.
+                    Leaf / leaf-list: Restore cache from backup.
+                end note
+                CHILDREN --> ROOT
+                deactivate CHILDREN
+            end
+        ROOT --> MODULE
+        deactivate ROOT
+
+        MODULE -> ROOT: ""Store()""
+        activate ROOT
+            loop children
+                ROOT -> CHILDREN: ""Store()""
+                activate CHILDREN
+                note right
+                    Container / list: Forward to children.
+                    Leaf / leaf-list: Apply cache to system.
+                end note
+                CHILDREN --> ROOT: Success status
+                deactivate CHILDREN
+            end
+        ROOT --> MODULE: Success status
+        deactivate ROOT
+
+        MODULE -> ROOT: ""Finalize()""
+        activate ROOT
+            loop children
+                ROOT -> CHILDREN: ""Finalize()""
+                activate CHILDREN
+                note right
+                    Container / list: Forward to children.
+                    Leaf / leaf-list: Delete backup.
+                end note
+                CHILDREN --> ROOT
+                deactivate CHILDREN
+            end
+        ROOT --> MODULE
+        deactivate ROOT
+
+    end
+    MODULE --> SYSREPO: Success status
+deactivate MODULE
+
+
+@enduml

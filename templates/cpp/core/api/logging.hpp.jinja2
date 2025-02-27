@@ -1,0 +1,43 @@
+#pragma once
+
+#include <sysrepo-cpp/Enum.hpp>
+#include <magic_enum.hpp>
+
+class CSysrepoErrCategory : public std::error_category
+{
+public:
+    const char *name() const noexcept override
+    {
+        return "sysrepo";
+    }
+
+    std::string message( int ev ) const override
+    {
+        return CSysrepoErrCategory::msg( static_cast<sysrepo::ErrorCode>( ev ) );
+    }
+
+    static std::string msg( sysrepo::ErrorCode ev )
+    {
+        return static_cast<std::string>( magic_enum::enum_name( ev ) );
+    }
+};
+
+/**
+ * @brief Macro to log and throw an exception based on std::system_error exception of a failed
+ *        sysrepo expression that returns an error.
+ *
+ * @param[in]   __call      The expression to evaluate.
+ * @param[in]   msg         A printf() style message that will be thrown upon error.
+ */
+#define THROW_SR_MSG( __call, msg, ... )                                                                               \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        sysrepo::ErrorCode _rc_;                                                                                       \
+        DBGLOG( "Executing '%s'", __stringify(__call));                                                                \
+        if ( sysrepo::ErrorCode::Ok != ( _rc_ = ( __call ) ) )                                                         \
+        {                                                                                                              \
+            throw std::system_error(                                                                                   \
+                std::error_code( static_cast<int>( _rc_ ), CSysrepoErrCategory() ), msg, ##__VA_ARGS__ );              \
+        }                                                                                                              \
+    } while ( 0 )
+#define THROW_SR( __call ) THROW_SR_MSG( __call, "'%s' failed", __stringify(__call) )

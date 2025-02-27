@@ -10,8 +10,6 @@ After registering the modules the system has been loaded into the local cache of
 - want to set some configuration items, or
 - want to trigger an RPC.
 
-_Note_: RPC functionality has not yet been fully implemented in the generated code.
-
 ## Initialization of Sysrepo Plugin
 
 ![Initialization of Sysrepo Plugin](puml/svg/plugin-start.svg)

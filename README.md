@@ -2,30 +2,17 @@
 
 Sysrepo plugin generator for C++ based on a set of YANG modules used for the specific plugin.
 
-## Dependencies
+## Code Generation Dependencies
 
-- libyang-python (>=3.0.4)
+- [libyang-python](https://github.com/CESNET/libyang-python) (>=3.1.0)
 - Jinja2
 - clang-format (>=11.0)
 
-### How to update clang-format to a newer version
+## Compilation / Runtime Dependencies
 
-Instructions from: <https://askubuntu.com/questions/1409031/how-to-use-a-more-recent-clang-format-or-clang-tidy-version-on-ubuntu-18-04>
-
-```[shell]
-sudo apd update
-sudo apd upgrade
-# Install add-apt-repository
-sudo apt install software-properties-common
-# Install gpg-agent
-sudo apt install gpg-agent
-# Ubuntu 20.04 - for others see the repo list under https://apt.llvm.org/
-sudo add-apt-repository 'deb http://apt.llvm.org/focal/ llvm-toolchain-focal main'
-# Install their public key
-wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key|sudo apt-key add -
-sudo apt update
-sudo apt install clang-format
-```
+- [sysrepo-cpp](https://github.com/sysrepo/sysrepo-cpp) (3.0.0)
+- [sysrepo-plugins-common/cpp](https://github.com/rbu9fe/sysrepo-plugins-common/tree/cpp) (0.1.0) - Note: Modified fork from https://github.com/rbu9fe/sysrepo-plugins-common/tree/cpp required, PR into https://github.com/telekom/sysrepo-plugins-common/tree/cpp is pending
+- magic_enum
 
 ## Usage
 

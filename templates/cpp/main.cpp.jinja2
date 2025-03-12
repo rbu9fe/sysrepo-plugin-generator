@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "plugin.hpp"
+#include "core/api/logging.hpp"
 
 static bool exit_application = false;
 
@@ -21,21 +22,21 @@ int main( void )
     error = sr_connect( SR_CONN_DEFAULT, &connection );
     if ( error )
     {
-        DBGLOG( "sr_connect error (%d): %s", error, sr_strerror( error ) );
+        DBGLOG( LOG_CRIT, "sr_connect error (%d): %s", error, sr_strerror( error ) );
         goto out;
     }
 
     error = sr_session_start( connection, SR_DS_RUNNING, &session );
     if ( error )
     {
-        DBGLOG( "sr_session_start error (%d): %s", error, sr_strerror( error ) );
+        DBGLOG( LOG_CRIT, "sr_session_start error (%d): %s", error, sr_strerror( error ) );
         goto out;
     }
 
     error = sr_plugin_init_cb( session, &private_data );
     if ( error )
     {
-        DBGLOG( "sr_plugin_init_cb error" );
+        DBGLOG( LOG_CRIT, "sr_plugin_init_cb error" );
         goto out;
     }
 
@@ -47,7 +48,7 @@ int main( void )
         sleep( 1 );
     }
 
-    DBGLOG( "Shutting down..." );
+    DBGLOG( LOG_NOTICE, "Shutting down..." );
 
 out:
     sr_plugin_cleanup_cb( session, private_data );
@@ -57,7 +58,7 @@ out:
     return error ? -1 : 0;
 }
 
-static void sigint_handler( __attribute__( ( unused ) ) int signum )
+static void sigint_handler( ATTR_UNUSED int signum )
 {
     exit_application = true;
 }

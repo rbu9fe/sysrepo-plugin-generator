@@ -2,6 +2,8 @@
 
 #include <sysrepo.h>
 
+#include "core/api/api-defs.hpp"
+
 extern "C" {
 PUBLIC_API int sr_plugin_init_cb( sr_session_ctx_t *session, void **priv );
 PUBLIC_API void sr_plugin_cleanup_cb( sr_session_ctx_t *session, void *priv );

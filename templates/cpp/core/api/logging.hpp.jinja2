@@ -1,8 +1,21 @@
 #pragma once
 
+#include <syslog.h>
+
+#include <system_error>
+
 #include <sysrepo-cpp/Enum.hpp>
 #include <magic_enum.hpp>
 
+// TODO: Replace by your own logger.
+#define DBGLOG( sev, msg, ... )                                                                                        \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if ( sev <= LOG_INFO )                                                                                         \
+        {                                                                                                              \
+            fprintf( stderr, "%s@%d: " msg "\n", __FILE__, __LINE__, ##__VA_ARGS__ );                                  \
+        }                                                                                                              \
+    } while ( 0 )
 class CSysrepoErrCategory : public std::error_category
 {
 public:
@@ -29,11 +42,11 @@ public:
  * @param[in]   __call      The expression to evaluate.
  * @param[in]   msg         A printf() style message that will be thrown upon error.
  */
-#define THROW_SR_MSG( __call, msg, ... )                                                                               \
+#define THROW_SR_MSG( __call, sev, msg, ... )                                                                          \
     do                                                                                                                 \
     {                                                                                                                  \
         sysrepo::ErrorCode _rc_;                                                                                       \
-        DBGLOG( "Executing '%s'", __stringify(__call));                                                                \
+        DBGLOG( sev, "Executing '%s'", __stringify(__call));                                                           \
         if ( sysrepo::ErrorCode::Ok != ( _rc_ = ( __call ) ) )                                                         \
         {                                                                                                              \
             throw std::system_error(                                                                                   \

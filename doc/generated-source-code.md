@@ -121,6 +121,7 @@ src
 │   │   │   ├── interfaces-ctx.hpp
 │   │   │   ├── interfaces.hpp
 │   │   │   └── types.hpp
+│   │   ├── api-defs.hpp
 │   │   ├── base.hpp
 │   │   └── logging.hpp
 │   ├── context.cpp
@@ -186,6 +187,10 @@ Entry point of the Sysrepo plugin. Creates the main Yang module instances and bi
 ### `core/api/logging.hpp`
 
 Defines logging utilities, in particular for function calls of the _sysrepo-cpp_ API.
+
+### `core/api/api-defs.hpp`
+
+Some platform specific API decorator macros.
 
 ### `core/api/base.hpp`
 

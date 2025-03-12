@@ -8,8 +8,11 @@ namespace core
 {
 
 template<typename T>
-CoreDatastoreInitializer<T>::CoreDatastoreInitializer( const std::string &module_name, sysrepo::Datastore datastore, T &data )
-    : m_module_name(module_name), m_datastore( datastore ), m_root( data )
+CoreDatastoreInitializer<T>::CoreDatastoreInitializer(
+    const std::string &module_name, sysrepo::Datastore datastore, T &data )
+    : m_module_name( module_name )
+    , m_datastore( datastore )
+    , m_root( data )
 {
 }
 
@@ -24,7 +27,7 @@ void CoreDatastoreInitializer<T>::initializeDatastore( Sysrepo::Session &session
     auto dst_datastore{ sysrepo::Datastore::Running };
 
     DBGLOG(
-        "Initializing %s datastore for module %s", magic_enum::enum_name( m_datastore ).data(),
+        LOG_DEBUG, "Initializing %s datastore for module %s", magic_enum::enum_name( m_datastore ).data(),
         m_module_name.data() );
 
     switch ( m_datastore )
@@ -112,7 +115,7 @@ void CoreDatastoreApplier<T>::applyDatastoreValues( Sysrepo::Session &session )
     for ( const auto &datastore : { /* FactoryDefault, */ Startup } )
     {
         DBGLOG(
-            "Applying %s datastore values for module %s", magic_enum::enum_name( datastore ).data(),
+            LOG_DEBUG, "Applying %s datastore values for module %s", magic_enum::enum_name( datastore ).data(),
             m_module_name.data() );
 
         session.switchDatastore( datastore );
@@ -222,7 +225,7 @@ sysrepo::ErrorCode CoreModule<T>::ChangeCb(
     auto rc{ sysrepo::ErrorCode::Ok };
 
     DBGLOG(
-        "%s: Entering sysrepo change callback for event '%s'.", moduleName.data(),
+        LOG_INFO, "%s: Entering sysrepo change callback for event '%s'.", moduleName.data(),
         magic_enum::enum_name( event ).data() );
 
     /* Provide the current sysrepo session so that the changes can be accessed directly from the running datastore. */
@@ -283,13 +286,13 @@ sysrepo::ErrorCode CoreModule<T>::ChangeCb(
             rc = sysrepo::ErrorCode::OperationFailed;
         }
 
-        DBGLOG( "%s: %s", moduleName.data(), e.what() );
+        DBGLOG( LOG_ERR, "%s: %s", moduleName.data(), e.what() );
 
         session.setErrorMessage( e.what() );
     }
     catch ( const std::runtime_error &e )
     {
-        DBGLOG( "%s: %s", moduleName.data(), e.what() );
+        DBGLOG( LOG_ERR, "%s: %s", moduleName.data(), e.what() );
         rc = sysrepo::ErrorCode::OperationFailed;
 
         session.setErrorMessage( e.what() );
@@ -306,13 +309,13 @@ sysrepo::ErrorCode CoreModule<T>::ChangeCb(
         if ( main_session.getPendingChanges().has_value() )
         {
             DBGLOG(
-                "%s: Starting committing operational changes that were triggered by config changes.",
+                LOG_DEBUG, "%s: Starting committing operational changes that were triggered by config changes.",
                 moduleName.data() );
 
             main_session.applyChanges();
 
             DBGLOG(
-                "%s: Done committing operational changes that were triggered by config changes.",
+                LOG_DEBUG, "%s: Done committing operational changes that were triggered by config changes.",
                 moduleName.data() );
         }
     }
@@ -323,7 +326,7 @@ sysrepo::ErrorCode CoreModule<T>::ChangeCb(
     main_session.switchDatastore( sysrepo::Datastore::Running );
 
     DBGLOG(
-        "%s: Leaving sysrepo change callback for event '%s'.", moduleName.data(),
+        LOG_INFO, "%s: Leaving sysrepo change callback for event '%s'.", moduleName.data(),
         magic_enum::enum_name( event ).data() );
 
     return rc;
@@ -342,7 +345,7 @@ template<typename T>
     auto rc{ sysrepo::ErrorCode::Ok };
 
     DBGLOG(
-        "%s: Entering sysrepo oper callback for path '%s'", moduleName.data(),
+        LOG_INFO, "%s: Entering sysrepo oper callback for path '%s'", moduleName.data(),
         requestXPath.value_or( "<empty>" ).data() );
 
     try
@@ -358,13 +361,13 @@ template<typename T>
     }
     catch ( const std::runtime_error &e )
     {
-        DBGLOG( "%s: %s", moduleName.data(), e.what() );
+        DBGLOG( LOG_ERR, "%s: %s", moduleName.data(), e.what() );
         rc = sysrepo::ErrorCode::OperationFailed;
 
         session.setErrorMessage( e.what() );
     }
 
-    DBGLOG( "%s: Leaving sysrepo oper callback.", moduleName.data() );
+    DBGLOG( LOG_INFO, "%s: Leaving sysrepo oper callback.", moduleName.data() );
 
     return rc;
 }

@@ -260,8 +260,8 @@ class YangBase
 {
 public:
     explicit YangBase(
-        const std::string &schema_path, const std::string &node_path,
-        const DataType data_type, ::core::PluginContext &ctx )
+        const std::string &schema_path, const std::string &node_path, const DataType data_type,
+        ::core::PluginContext &ctx )
         : m_schema_path( schema_path )
         , m_node_path( node_path )
         , m_data_type( data_type )
@@ -339,13 +339,12 @@ public:
     {
         if constexpr ( std::is_same_v<T, std::string> )
         {
-            DBGLOG(
-                "%s: %s", m_node_path.data(), value.has_value() ? value->data() : "<empty>" );
+            DBGLOG( LOG_DEBUG, "%s: %s", m_node_path.data(), value.has_value() ? value->data() : "<empty>" );
         }
         else
         {
             DBGLOG(
-                "%s: %s%s", m_node_path.data(), prefix.data(),
+                LOG_DEBUG, "%s: %s%s", m_node_path.data(), prefix.data(),
                 value.has_value() ? GetValueAsString<T>( *value ).data() : "<empty>" );
         }
     }
@@ -371,7 +370,7 @@ public:
         }
 
         DBGLOG(
-            "%s: %s[%s]", m_node_path.data(), prefix.data(),
+            LOG_DEBUG, "%s: %s[%s]", m_node_path.data(), prefix.data(),
             str_list.empty() ? str_list.data() : str_list.substr( 1 ).data() );
     }
 
@@ -410,14 +409,14 @@ public:
             if constexpr ( std::is_same_v<T, std::string> )
             {
                 DBGLOG(
-                    "%s: %s => %s", m_node_path.data(),
+                    LOG_DEBUG, "%s: %s => %s", m_node_path.data(),
                     old_value.has_value() ? old_value->data() : "<empty>",
                     new_value.has_value() ? new_value->data() : "<empty>" );
             }
             else
             {
                 DBGLOG(
-                    "%s: %s => %s", m_node_path.data(),
+                    LOG_DEBUG, "%s: %s => %s", m_node_path.data(),
                     old_value.has_value() ? GetValueAsString<T>( *old_value ).data() : "<empty>",
                     new_value.has_value() ? GetValueAsString<T>( *new_value ).data() : "<empty>" );
             }
@@ -452,7 +451,7 @@ public:
             };
 
             DBGLOG(
-                "%s: [%s] => [%s]", m_node_path.data(), get_list_string( old_list ).data(),
+                LOG_DEBUG, "%s: [%s] => [%s]", m_node_path.data(), get_list_string( old_list ).data(),
                 get_list_string( new_list ).data() );
         }
     }
@@ -538,8 +537,8 @@ class YangKeyLeaf : public YangBase
 {
 public:
     YangKeyLeaf(
-        const std::string &schema_path, const std::string &node_path,
-        const DataType data_type, ::core::PluginContext &ctx, const T &key )
+        const std::string &schema_path, const std::string &node_path, const DataType data_type,
+        ::core::PluginContext &ctx, const T &key )
         : YangBase( schema_path, node_path, data_type, ctx )
         , m_value( key )
     {
@@ -600,8 +599,7 @@ class YangKeyLeafState : public YangKeyLeaf<T>
 {
 public:
     YangKeyLeafState(
-        const std::string &schema_path, const std::string &node_path,
-        ::core::PluginContext &ctx, const T &key )
+        const std::string &schema_path, const std::string &node_path, ::core::PluginContext &ctx, const T &key )
         : YangKeyLeaf<T>( schema_path, node_path, DataType::kStatePush, ctx, key )
     {
     }
@@ -617,8 +615,8 @@ class YangKeyLeafConfig : public YangKeyLeaf<T>
 {
 public:
     YangKeyLeafConfig(
-        const std::string &schema_path, const std::string &node_path,
-        ::core::PluginContext &ctx, const T &key, DataType data_type = DataType::kConfig )
+        const std::string &schema_path, const std::string &node_path, ::core::PluginContext &ctx, const T &key,
+        DataType data_type = DataType::kConfig )
         : YangKeyLeaf<T>( schema_path, node_path, data_type, ctx, key )
     {
     }
@@ -664,8 +662,8 @@ class YangContainerConfig : public YangBase
 {
 public:
     YangContainerConfig(
-        const std::string &schema_path, const std::string &node_path,
-        ::core::PluginContext &ctx, DataType data_type = DataType::kConfig )
+        const std::string &schema_path, const std::string &node_path, ::core::PluginContext &ctx,
+        DataType data_type = DataType::kConfig )
         : YangBase( schema_path, node_path, data_type, ctx )
     {
     }
@@ -761,8 +759,8 @@ class YangListConfig : public YangBase
 {
 public:
     YangListConfig(
-        const std::string &schema_path, const std::string &node_path,
-        ::core::PluginContext &ctx, SystemChange system_change, DataType data_type = DataType::kConfig )
+        const std::string &schema_path, const std::string &node_path, ::core::PluginContext &ctx,
+        SystemChange system_change, DataType data_type = DataType::kConfig )
         : YangBase( schema_path, node_path, data_type, ctx )
         , m_system_change( system_change )
     {
@@ -977,7 +975,7 @@ public:
         catch ( const std::system_error &e )
         {
             DBGLOG(
-                "Failed to update %s data under '%s': %s",
+                LOG_ERR, "Failed to update %s data under '%s': %s",
                 magic_enum::enum_name( sysrepo::Datastore::Operational ).data(), GetNodePath().data(), e.what() );
         }
 
@@ -997,9 +995,8 @@ class YangLeafConfig : public YangBase
 {
 public:
     YangLeafConfig(
-        const std::string &schema_path, const std::string &node_path,
-        ::core::PluginContext &ctx, const std::optional<T> &default_value = std::nullopt,
-        DataType data_type = DataType::kConfig )
+        const std::string &schema_path, const std::string &node_path, ::core::PluginContext &ctx,
+        const std::optional<T> &default_value = std::nullopt, DataType data_type = DataType::kConfig )
         : YangBase( schema_path, node_path, data_type, ctx )
         , m_value_default( default_value )
     {
@@ -1253,8 +1250,8 @@ public:
         catch ( const std::system_error &e )
         {
             DBGLOG(
-                "Failed to update %s data under '%s': %s",
-                magic_enum::enum_name( datastore ).data(), GetNodePath().data(), e.what() );
+                LOG_ERR, "Failed to update %s data under '%s': %s", magic_enum::enum_name( datastore ).data(),
+                GetNodePath().data(), e.what() );
         }
 
         session.switchDatastore( old_datastore );
@@ -1431,8 +1428,8 @@ class YangLeafListConfig : public YangBase
 {
 public:
     YangLeafListConfig(
-        const std::string &schema_path, const std::string &node_path,
-        ::core::PluginContext &ctx, const std::list<T> &default_list = {}, DataType data_type = DataType::kConfig )
+        const std::string &schema_path, const std::string &node_path, ::core::PluginContext &ctx,
+        const std::list<T> &default_list = {}, DataType data_type = DataType::kConfig )
         : YangBase( schema_path, node_path, data_type, ctx )
         , m_list_default( default_list )
     {
@@ -1791,8 +1788,8 @@ public:
         catch ( const std::system_error &e )
         {
             DBGLOG(
-                "Failed to update %s data under '%s': %s",
-                magic_enum::enum_name( datastore ).data(), GetNodePath().data(), e.what() );
+                LOG_ERR, "Failed to update %s data under '%s': %s", magic_enum::enum_name( datastore ).data(),
+                GetNodePath().data(), e.what() );
         }
 
         session.switchDatastore( old_datastore );
@@ -1828,9 +1825,7 @@ private:
 class YangRpc : public YangBase
 {
 public:
-    explicit YangRpc(
-        const std::string &schema_path, const std::string &node_path,
-        ::core::PluginContext &ctx )
+    explicit YangRpc( const std::string &schema_path, const std::string &node_path, ::core::PluginContext &ctx )
         : YangBase( schema_path, node_path, DataType::kNone, ctx )
     {
     }
@@ -1852,7 +1847,7 @@ private:
     {
         auto rc{ sysrepo::ErrorCode::Ok };
 
-        DBGLOG( "Entering sysrepo RPC callback at '%s'.", path.data() );
+        DBGLOG( LOG_INFO, "Entering sysrepo RPC callback at '%s'.", path.data() );
 
         try
         {
@@ -1870,15 +1865,15 @@ private:
                 rc = sysrepo::ErrorCode::OperationFailed;
             }
 
-            DBGLOG( "RPC at '%s': %s", path.data(), e.what() );
+            DBGLOG( LOG_ERR, "RPC at '%s': %s", path.data(), e.what() );
         }
         catch ( const std::runtime_error &e )
         {
-            DBGLOG( "RPC at '%s': %s", path.data(), e.what() );
+            DBGLOG( LOG_ERR, "RPC at '%s': %s", path.data(), e.what() );
             rc = sysrepo::ErrorCode::OperationFailed;
         }
 
-        DBGLOG( "Leaving sysrepo RPC callback at '%s'.", path.data() );
+        DBGLOG( LOG_INFO, "Leaving sysrepo RPC callback at '%s'.", path.data() );
 
         return rc;
     }

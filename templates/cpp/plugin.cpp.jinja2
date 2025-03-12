@@ -1,4 +1,6 @@
-#include <sysrepo-cpp/sysrepo-wrapper.hpp>
+#include <sysrepo-cpp/Connection.hpp>
+#include <sysrepo-cpp/Session.hpp>
+#include <sysrepo-cpp/utils/exception.hpp>
 #include <sysrepo-cpp/utils/utils.hpp>
 #include <sysrepo.h>
 #include <srpcpp.hpp>
@@ -46,7 +48,7 @@ int sr_plugin_init_cb( sr_session_ctx_t *c_session, void **priv )
     auto &registry( srpc::ModuleRegistry<core::PluginContext>::getInstance() );
     {% for module in modules %}
         
-        DBGLOG( "Registering {{ module.get_name() }} module" );
+        DBGLOG( LOG_INFO, "Registering {{ module.get_name() }} module" );
         registry.registerModule<core::CoreModule<core::api::{{ to_camel_case(to_c_variable(module.prefix), True) }}>>( *ctx, "{{ module.get_name() }}" );
     {% endfor %}
 
@@ -64,7 +66,7 @@ int sr_plugin_init_cb( sr_session_ctx_t *c_session, void **priv )
             catch ( const std::runtime_error &e )
             {
                 DBGLOG(
-                    "Failed to initialize %s datastore for module %s: %s",
+                    LOG_CRIT, "Failed to initialize %s datastore for module %s: %s",
                     magic_enum::enum_name( session.activeDatastore() ).data(), mod->getName(), e.what() );
 
                 session.switchDatastore( sysrepo::Datastore::Running );
@@ -73,28 +75,28 @@ int sr_plugin_init_cb( sr_session_ctx_t *c_session, void **priv )
     }
 
     /* The modules prepared their running configuration in the candidate datastore => activate it now! */
-    DBGLOG( "Comitting initial running datastore" );
+    DBGLOG( LOG_INFO, "Comitting initial running datastore" );
     session.copyConfig( sysrepo::Datastore::Candidate, std::nullopt, sysrepo::kDefaultTimeoutApplyChanges );
 
     /* Register subscriptions. */
     for ( auto &mod : modules )
     {
-        DBGLOG( "Registering operational callbacks for module %s", mod->getName() );
+        DBGLOG( LOG_DEBUG, "Registering operational callbacks for module %s", mod->getName() );
         srpc::registerOperationalSubscriptions( session, *ctx, mod );
 
-        DBGLOG( "Registering module change callbacks for module %s", mod->getName() );
+        DBGLOG( LOG_DEBUG, "Registering module change callbacks for module %s", mod->getName() );
         srpc::registerModuleChangeSubscriptions( session, *ctx, mod );
 
-        DBGLOG( "Registering RPC callbacks for module %s", mod->getName() );
+        DBGLOG( LOG_DEBUG, "Registering RPC callbacks for module %s", mod->getName() );
         srpc::registerRpcSubscriptions( session, *ctx, mod );
 
-        DBGLOG( "Registered module %s", mod->getName() );
+        DBGLOG( LOG_DEBUG, "Registered module %s", mod->getName() );
     }
 
     /* Call datastore appliers (e.g. apply factory-default and/or startup datastores to the system). */
     for ( const auto &mod : modules )
     {
-        DBGLOG( "Applying startup values for module %s", mod->getName() );
+        DBGLOG( LOG_DEBUG, "Applying startup values for module %s", mod->getName() );
         for ( const auto &applier : mod->getValueAppliers() )
         {
             try
@@ -103,12 +105,12 @@ int sr_plugin_init_cb( sr_session_ctx_t *c_session, void **priv )
             }
             catch ( const std::runtime_error &e )
             {
-                DBGLOG( "Failed to apply datastore values for module %s: %s", mod->getName(), e.what() );
+                DBGLOG( LOG_CRIT, "Failed to apply datastore values for module %s: %s", mod->getName(), e.what() );
 
-                DBGLOG( "Affected paths:" );
+                DBGLOG( LOG_CRIT, "Affected paths:" );
                 for ( const auto &path : applier->getPaths() )
                 {
-                    DBGLOG( "\t%s", path.data() );
+                    DBGLOG( LOG_CRIT, "\t%s", path.data() );
                 }
 
                 session.switchDatastore( sysrepo::Datastore::Running );
@@ -117,7 +119,7 @@ int sr_plugin_init_cb( sr_session_ctx_t *c_session, void **priv )
     }
 
     /* The modules prepared their factory-default/startup changes in the candidate datastore => activate them now! */
-    DBGLOG( "Comitting changes from factory-default/startup into running datastore" );
+    DBGLOG( LOG_INFO, "Comitting changes from factory-default/startup into running datastore" );
     session.copyConfig( sysrepo::Datastore::Candidate, std::nullopt, sysrepo::kDefaultTimeoutApplyChanges );
 
     return static_cast<int>( error );

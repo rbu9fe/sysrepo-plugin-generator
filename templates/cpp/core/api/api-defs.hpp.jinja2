@@ -1,0 +1,26 @@
+#pragma once
+
+/**
+ * Public API decorators.
+ */
+
+/** Externally defined symbol. */
+#if defined( __GNUC__ )
+#define EXTERN extern
+#else
+#error Missing platform definition
+#endif
+
+/** Public API, exported. */
+#if defined( __GNUC__ )
+#define PUBLIC_API EXTERN __attribute__( ( visibility( "default" ) ) )
+#else
+#error Missing platform definition
+#endif
+
+/** Suppress compiler warning for unused symbol. */
+#if defined( __GNUC__ )
+#define ATTR_UNUSED __attribute__( ( unused ) )
+#else
+#error Missing platform definition
+#endif

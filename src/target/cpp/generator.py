@@ -245,6 +245,9 @@ class CPPGenerator(Generator):
         self.logger.info("Generating API files:")
 
         self.__generate_file(
+            "core/api/api-defs.hpp")
+
+        self.__generate_file(
             "core/api/base.hpp")
 
         self.__generate_file(

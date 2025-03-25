@@ -167,7 +167,7 @@ Wrapper of a single main Yang node, which constructs its generated C++ class. It
 
 ### `context.hpp`
 
-Provides a context for the entire plugin in order to provide information (e.g. list of enabled Yang features) or to get, add and remove context objects, that can be shared between arbitrary Yang nodes throughout the entire Yang tree.
+Provides a context for the entire plugin in order to provide information (e.g. list of loaded Yang modules and a list of enabled Yang features) or to get, add and remove context objects, that can be shared between arbitrary Yang nodes throughout the entire Yang tree.
 
 ### `plugin.hpp` and `plugin.cpp`
 

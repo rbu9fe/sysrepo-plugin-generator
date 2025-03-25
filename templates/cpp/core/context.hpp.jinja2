@@ -3,9 +3,11 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <map>
 #include <algorithm>
 #include <functional>
 
+#include <libyang-cpp/Module.hpp>
 #include <sysrepo-cpp/Connection.hpp>
 #include <sysrepo-cpp/Session.hpp>
 #include <sysrepo-cpp/utils/exception.hpp>
@@ -28,6 +30,15 @@ public:
 };
 
 /**
+ * @brief Yang module with its features.
+ */
+struct YangModule
+{
+    const libyang::Module module;
+    const std::map<std::string, bool, std::less<>> features;
+};
+
+/**
  * @brief Plugin context.
  */
 class PluginContext : public srpc::BasePluginContext
@@ -42,13 +53,18 @@ public:
     explicit PluginContext( const std::shared_ptr<Sysrepo::Session> &sess )
         : srpc::BasePluginContext( sess )
     {
-        /* Initialize the feature map. */
+        /* Initialize the Yang model map with the feature list. */
         for ( const auto &yang_model : sess->getContext().modules() )
         {
-            for ( const auto &feature : yang_model.features() )
-            {
-                m_feature_map[yang_model.name()][feature.name()] = feature.isEnabled();
-            }
+            std::map<std::string, bool, std::less<>> features;
+            std::ranges::transform(
+                yang_model.features(), std::inserter( features, features.end() ),
+                []( const auto &feature )
+                {
+                    return std::pair{ feature.name(), feature.isEnabled() };
+                } );
+
+            m_yang_modules.try_emplace( yang_model.name(), YangModule{ yang_model, features } );
         }
     }
 
@@ -68,6 +84,14 @@ public:
     }
 
     /**
+     * @brief Get a compiled Yang module.
+     */
+    const libyang::Module &GetYangModule( const std::string &model ) const
+    {
+        return m_yang_modules.at( model ).module;
+    }
+
+    /**
      * @brief Check whether the incoming list of features is enabled for the given model.
      */
     bool FeaturesEnabled( const std::string &model, const std::vector<std::string> &features ) const
@@ -76,7 +100,7 @@ public:
             features,
             [this, &model]( const std::string &feature )
             {
-                return m_feature_map.at( model ).at( feature );
+                return m_yang_modules.at( model ).features.at( feature );
             } );
     }
 
@@ -163,15 +187,15 @@ public:
     // TODO: [generator] Add getter functions for dependency injection objects here.
 
 private:
-    /* Feature map indexed by Yang model name and feature name. */
-    std::map<std::string, std::map<std::string, bool, std::less<>>, std::less<>> m_feature_map;
+    /* Map of interesting Yang models and their respective features. */
+    std::map<std::string, YangModule, std::less<>> m_yang_modules;
 
     /* Arbitrary contexts owned by plugin's API. */
     std::shared_ptr<ApiContext> m_apiGlobalCtx; ///< Global API context
     std::map<std::string, std::shared_ptr<ApiContext>, std::less<>>
         m_apiComponentCtx; ///< API component specific context
 
-    /* A sysrepo session that's valid only in the context of a sysrepo change callback. */
+    /* A sysrepo session that's valid only in the context of a sysrepo change callback carrying the not-yet committed data. */
     std::shared_ptr<Sysrepo::Session> m_callback_session{ nullptr };
 
     // TODO: [generator] Add dependency injection objects here.
